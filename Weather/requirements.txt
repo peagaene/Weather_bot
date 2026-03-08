@@ -1,0 +1,7 @@
+python-dateutil
+numpy
+streamlit
+pandas
+plotly
+python-dotenv
+py-clob-client

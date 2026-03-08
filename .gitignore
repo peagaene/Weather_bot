@@ -1,0 +1,43 @@
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# IDE / OS noise
+.DS_Store
+Thumbs.db
+
+# Project runtime outputs
+Weather/export/
+Weather/export/**
+Weather/src/**/__pycache__/
+Weather/*.log
+Weather/*.json
+!Weather/.env.example
+
+Cripto/export/
+Cripto/export/**
+Cripto/src/**/__pycache__/
+Cripto/*.log
+Cripto/*.json
+!Cripto/.env.example
