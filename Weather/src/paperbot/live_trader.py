@@ -63,7 +63,7 @@ def _sanitize_open_orders(orders: list[dict[str, Any]]) -> dict[str, Any]:
     for order in orders[:10]:
         summary_orders.append(
             {
-                "id": _extract_order_id(order),
+                "id": _mask_identifier(_extract_order_id(order)),
                 "side": order.get("side"),
                 "status": _extract_order_status(order),
                 "price_cents": _extract_order_price_cents(order),
@@ -82,14 +82,14 @@ def _sanitize_fills(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for trade in trades[:20]:
         sanitized.append(
             {
-                "id": str(trade.get("id") or trade.get("tradeID") or ""),
-                "order_id": str(
+                "id": _mask_identifier(str(trade.get("id") or trade.get("tradeID") or "")),
+                "order_id": _mask_identifier(str(
                     trade.get("orderID")
                     or trade.get("order_id")
                     or trade.get("maker_order_id")
                     or trade.get("taker_order_id")
                     or ""
-                ),
+                )),
                 "price_cents": _extract_trade_price_cents(trade),
                 "share_size": _extract_trade_shares(trade),
                 "timestamp": _extract_trade_timestamp_iso(trade),
@@ -100,12 +100,18 @@ def _sanitize_fills(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _sanitize_response_payload(response: Any) -> dict[str, Any]:
     if not isinstance(response, dict):
-        return {"raw": str(response)}
+        return {"raw": _sanitize_error_text(response)}
 
     safe: dict[str, Any] = {}
     for key in ("success", "errorMsg", "status", "orderID", "orderId", "id", "market", "asset_id"):
         if key in response:
-            safe[key] = response.get(key)
+            value = response.get(key)
+            if key in {"orderID", "orderId", "id", "asset_id"}:
+                safe[key] = _mask_identifier(value)
+            elif key == "errorMsg":
+                safe[key] = _sanitize_error_text(value)
+            else:
+                safe[key] = value
     if "open_orders" in response and isinstance(response["open_orders"], list):
         safe.update(_sanitize_open_orders(response["open_orders"]))
     if not safe:
@@ -126,11 +132,46 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _mask_identifier(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) <= 8:
+        return "***"
+    return f"{text[:4]}...{text[-4:]}"
+
+
+def _mask_wallet_address(value: Any) -> str | None:
+    masked = _mask_identifier(value)
+    return masked
+
+
+def _sanitize_error_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    redacted = text
+    for env_key in (
+        "POLYMARKET_PRIVATE_KEY",
+        "POLYMARKET_API_KEY",
+        "POLYMARKET_API_SECRET",
+        "POLYMARKET_API_PASSPHRASE",
+        "POLYMARKET_FUNDER",
+    ):
+        secret = os.getenv(env_key, "").strip()
+        if secret:
+            redacted = redacted.replace(secret, f"<redacted:{env_key.lower()}>")
+    return redacted[:240]
+
+
 def _build_client():
     try:
         from py_clob_client.client import ClobClient
         from py_clob_client.clob_types import ApiCreds
         from py_clob_client.constants import POLYGON
+        from py_clob_client.signer import Signer
     except Exception as exc:
         return None, f"py-clob-client unavailable: {exc}"
 
@@ -140,11 +181,22 @@ def _build_client():
     api_key = os.getenv("POLYMARKET_API_KEY", "").strip()
     api_secret = os.getenv("POLYMARKET_API_SECRET", "").strip()
     api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE", "").strip()
-    funder = os.getenv("POLYMARKET_FUNDER", "").strip() or None
+    funder = _resolve_funder_address()
     signature_type = int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "0"))
 
     if not private_key:
         return None, "POLYMARKET_PRIVATE_KEY not configured"
+
+    try:
+        signer_address = Signer(private_key, chain_id).address()
+    except Exception as exc:
+        return None, f"invalid signer setup: {exc}"
+
+    signature_type = _resolve_signature_type(
+        configured_signature_type=signature_type,
+        signer_address=signer_address,
+        funder=funder,
+    )
 
     creds = None
     if api_key and api_secret and api_passphrase:
@@ -164,6 +216,26 @@ def _build_client():
         return client, None
     except Exception as exc:
         return None, str(exc)
+
+
+def _resolve_funder_address() -> str | None:
+    for env_key in ("POLYMARKET_FUNDER", "WEATHER_PUBLIC_WALLET_ADDRESS", "POLYMARKET_PUBLIC_ADDRESS"):
+        value = os.getenv(env_key, "").strip()
+        if value:
+            return value
+    return None
+
+
+def _resolve_signature_type(*, configured_signature_type: int, signer_address: str, funder: str | None) -> int:
+    signer = str(signer_address or "").strip().lower()
+    funded = str(funder or "").strip().lower()
+    if configured_signature_type in {1, 2}:
+        return configured_signature_type
+    if funded and signer and funded != signer:
+        # Polymarket proxy/Magic wallets need signature_type=1.
+        # Browser-wallet proxy users can still override explicitly with 2.
+        return 1
+    return configured_signature_type
 
 
 def _parse_token_balance(value: Any, decimals: int = 6) -> float | None:
@@ -225,13 +297,16 @@ def get_account_snapshot() -> dict[str, Any]:
         return {
             "ok": True,
             "wallet_address": client.signer.address(),
+            "wallet_address_masked": _mask_wallet_address(client.signer.address()),
+            "trading_address": _resolve_funder_address() or client.signer.address(),
+            "trading_address_masked": _mask_wallet_address(_resolve_funder_address() or client.signer.address()),
             "collateral_balance_raw": raw_balance,
             "collateral_balance_usd": _parse_token_balance(raw_balance, decimals=decimals),
             "collateral_allowance_usd": allowance_usd,
             "allowances": allowances,
         }
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": _sanitize_error_text(exc)}
 
 
 def _extract_order_id(order: dict[str, Any]) -> str | None:
@@ -712,7 +787,12 @@ def execute_order_plan(
             side=plan.side,
             price_cents=plan.limit_price_cents,
             share_size=plan.share_size,
-            response={"collateral_balance_usd": balance_usd},
+            response={
+                "wallet_address_masked": snapshot.get("wallet_address_masked"),
+                "trading_address_masked": snapshot.get("trading_address_masked"),
+                "collateral_balance_usd": balance_usd,
+                "collateral_allowance_usd": allowance_usd,
+            },
             error="insufficient_collateral_balance",
             event_slug=plan.event_slug,
             token_id=plan.token_id,

@@ -73,8 +73,13 @@ def normalize_open_positions(frame: pd.DataFrame) -> pd.DataFrame:
 def compute_open_position_totals(frame: pd.DataFrame) -> tuple[float, float]:
     if frame.empty:
         return 0.0, 0.0
-    value_usd = float(pd.to_numeric(frame.get("dashboard_value_usd"), errors="coerce").fillna(0.0).sum())
-    open_pnl_usd = float(pd.to_numeric(frame.get("dashboard_open_pnl_usd"), errors="coerce").fillna(0.0).sum())
+    normalized = frame.copy()
+    if "dashboard_value_usd" not in normalized.columns or "dashboard_open_pnl_usd" not in normalized.columns:
+        normalized = normalize_open_positions(normalized)
+    value_series = pd.to_numeric(normalized["dashboard_value_usd"], errors="coerce")
+    pnl_series = pd.to_numeric(normalized["dashboard_open_pnl_usd"], errors="coerce")
+    value_usd = float(value_series.fillna(0.0).sum())
+    open_pnl_usd = float(pnl_series.fillna(0.0).sum())
     return value_usd, open_pnl_usd
 
 

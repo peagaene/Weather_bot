@@ -1,7 +1,7 @@
 @echo off
 cd /d %~dp0
 
-start "Weather Dashboard" cmd /k "cd /d %~dp0 && python -m streamlit run dashboard.py --server.address 127.0.0.1"
+start "Weather Dashboard" cmd /k "cd /d %~dp0 && python -m streamlit run dashboard.py --server.address 127.0.0.1 --server.headless true"
 
 timeout /t 2 /nobreak >nul
 start "" http://localhost:8501

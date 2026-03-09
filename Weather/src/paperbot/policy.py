@@ -126,6 +126,12 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     degraded_reason = str(getattr(opportunity, "degraded_reason", "") or "").strip()
     executable_quality_score = float(getattr(opportunity, "executable_quality_score", 0.0) or 0.0)
     data_quality_score = float(getattr(opportunity, "data_quality_score", 0.0) or 0.0)
+    coverage_issue_type = str(getattr(opportunity, "coverage_issue_type", "") or "").strip().lower()
+    valid_model_count = int(getattr(opportunity, "valid_model_count", 0) or 0)
+    required_model_count = int(getattr(opportunity, "required_model_count", 0) or 0)
+    agreement_models = int(getattr(opportunity, "agreement_models", 0) or 0)
+    total_models = int(getattr(opportunity, "total_models", 0) or 0)
+    provider_failures = {str(item).strip().lower() for item in (getattr(opportunity, "provider_failures", None) or []) if str(item).strip()}
     allowed_signal_tiers = {
         item.strip().upper()
         for item in str(os.getenv("WEATHER_POLICY_ALLOWED_SIGNAL_TIERS", "A+,A")).split(",")
@@ -142,24 +148,52 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     min_worst_case_edge = float(os.getenv("WEATHER_POLICY_MIN_WORST_CASE_EDGE", "10"))
     min_execution_quality = float(os.getenv("WEATHER_POLICY_MIN_EXECUTION_QUALITY", "0.6"))
     min_data_quality = float(os.getenv("WEATHER_POLICY_MIN_DATA_QUALITY", "0.55"))
+    fallback_enabled = str(os.getenv("WEATHER_POLICY_ALLOW_FALLBACK_COVERAGE", "1")).strip().lower() not in {"0", "false", "no"}
+    fallback_min_models = int(os.getenv("WEATHER_POLICY_FALLBACK_MIN_VALID_MODELS", "4") or 4)
+    fallback_min_worst_case_edge = float(os.getenv("WEATHER_POLICY_FALLBACK_MIN_WORST_CASE_EDGE", "12") or 12)
+    fallback_min_execution_quality = float(os.getenv("WEATHER_POLICY_FALLBACK_MIN_EXECUTION_QUALITY", "0.6") or 0.6)
+    tolerated_failures = {
+        item.strip().lower()
+        for item in str(
+            os.getenv(
+                "WEATHER_POLICY_FALLBACK_TOLERATED_PROVIDER_FAILURES",
+                "best_match,ecmwf,gem,gfs,icon,jma,ecmwf_ens,gfs_ens,icon_ens,tomorrow",
+            )
+        ).split(",")
+        if item.strip()
+    }
 
-    if not coverage_ok:
+    fallback_coverage_ok = (
+        fallback_enabled
+        and coverage_issue_type == "provider_failure"
+        and valid_model_count >= max(fallback_min_models, required_model_count)
+        and total_models == valid_model_count
+        and agreement_models == total_models
+        and min_agreeing_model_edge >= fallback_min_worst_case_edge
+        and executable_quality_score >= fallback_min_execution_quality
+        and provider_failures.issubset(tolerated_failures)
+    )
+
+    if not coverage_ok and not fallback_coverage_ok:
         return PolicyDecision(False, "coverage_not_ok", risk_label, risk_score)
-    if degraded_reason:
+    if degraded_reason and not fallback_coverage_ok:
         return PolicyDecision(False, f"degraded:{degraded_reason}", risk_label, risk_score)
-    if signal_tier not in allowed_signal_tiers:
+    effective_signal_tier = signal_tier
+    if fallback_coverage_ok and signal_tier == "C":
+        effective_signal_tier = "A"
+    if effective_signal_tier not in allowed_signal_tiers:
         return PolicyDecision(False, "signal_tier_not_actionable", risk_label, risk_score)
     if confidence_tier == "risky":
         return PolicyDecision(False, "confidence_risky", risk_label, risk_score)
     if risk_label == "Risky":
         return PolicyDecision(False, "risk_label_risky", risk_label, risk_score)
-    if risk_label != "Safe":
+    if risk_label != "Safe" and not (fallback_coverage_ok and risk_label == "Moderate"):
         return PolicyDecision(False, "risk_label_not_safe", risk_label, risk_score)
     if min_agreeing_model_edge < min_worst_case_edge:
         return PolicyDecision(False, "worst_case_edge_too_low", risk_label, risk_score)
     if executable_quality_score < min_execution_quality:
         return PolicyDecision(False, "execution_quality_too_low", risk_label, risk_score)
-    if data_quality_score < min_data_quality:
+    if data_quality_score < min_data_quality and not fallback_coverage_ok:
         return PolicyDecision(False, "data_quality_too_low", risk_label, risk_score)
     if price < policy_min_price:
         return PolicyDecision(False, "price_below_policy_min", risk_label, risk_score)

@@ -50,9 +50,16 @@ class WeatherOpportunity:
     agreement_models: int = 0
     total_models: int = 0
     agreement_pct: float = 0.0
+    agreement_summary: str = "--"
+    agreeing_model_names: list[str] | None = None
     confidence_tier: str = "risky"
     coverage_ok: bool = False
+    coverage_issue_type: str | None = None
+    valid_model_count: int = 0
+    required_model_count: int = 0
     degraded_reason: str | None = None
+    provider_failures: list[str] | None = None
+    provider_failure_details: dict[str, str] | None = None
     policy_allowed: bool = False
     policy_reason: str = ""
     price_source: str = "gamma_outcome_price"
@@ -468,6 +475,25 @@ def _model_side_agreement_pct(
     return agree, total, pct
 
 
+def _agreeing_model_names(
+    predictions: dict[str, float],
+    low: float,
+    high: float,
+    side: str,
+) -> list[str]:
+    agreeing: list[str] = []
+    for model_name, value in predictions.items():
+        try:
+            predicted_high = float(value)
+        except (TypeError, ValueError):
+            continue
+        predicted_yes = low <= predicted_high <= high
+        predicted_side = "YES" if predicted_yes else "NO"
+        if predicted_side == side:
+            agreeing.append(str(model_name))
+    return agreeing
+
+
 def _confidence_tier_from_agreement(agreement_pct: float) -> str:
     return _confidence_tier_from_agreement_with_count(agreement_pct, 0)
 
@@ -510,6 +536,12 @@ def _build_opportunity(
         low,
         high,
         side,
+    )
+    agreeing_model_names = _agreeing_model_names(ensemble.predictions, low, high, side)
+    agreement_summary = (
+        f"{agreement_models}/{total_models}"
+        if total_models > 0
+        else "--"
     )
     break_even_price = _fee_adjusted_price(price_cents)
     mean_agreeing_model_edge, min_agreeing_model_edge, agreeing_model_count, _, agreeing_pct = _model_edge_statistics(
@@ -565,9 +597,16 @@ def _build_opportunity(
         agreement_models=agreement_models,
         total_models=total_models,
         agreement_pct=round(agreement_pct, 2),
+        agreement_summary=agreement_summary,
+        agreeing_model_names=agreeing_model_names,
         confidence_tier=_confidence_tier_from_agreement_with_count(agreement_pct, total_models),
         coverage_ok=bool(getattr(ensemble, "coverage_ok", False)),
+        coverage_issue_type=getattr(ensemble, "coverage_issue_type", None),
+        valid_model_count=int(getattr(ensemble, "valid_model_count", 0) or 0),
+        required_model_count=int(getattr(ensemble, "required_model_count", 0) or 0),
         degraded_reason=getattr(ensemble, "degraded_reason", None),
+        provider_failures=list(getattr(ensemble, "provider_failures", None) or []),
+        provider_failure_details=dict(getattr(ensemble, "provider_failure_details", None) or {}) or None,
         price_source=price_source,
         reference_price_cents=round(reference_price_cents, 4),
         best_bid_cents=(bucket.yes_best_bid_cents if side == "YES" else bucket.no_best_bid_cents),

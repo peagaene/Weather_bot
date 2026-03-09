@@ -1,0 +1,11 @@
+﻿Analisado em,Cidade,Data,Bucket,Lado,Edge,Prob. modelo,Preco,Tier,Worst-case Edge,Adv Score,Confidence,Risco,Motivo,Coverage,Falhas provider,Motivo plano,Shares
+09/03 14:18:43 UTC,NYC,09-MAR,66°F or higher,NO,79.06%,93.20%,13.90c,,--,--,RISKY,Safe,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",,14.39
+09/03 14:18:43 UTC,NYC,09-MAR,64-65°F,YES,68.95%,81.16%,12.00c,,--,--,RISKY,Moderate,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",,16.67
+09/03 14:18:43 UTC,MIA,09-MAR,82-83°F,YES,52.75%,81.16%,28.00c,,--,--,RISKY,Moderate,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",,7.14
+09/03 14:18:43 UTC,ATL,11-MAR,82-83°F,YES,51.74%,81.16%,29.00c,,--,--,RISKY,Moderate,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",,6.90
+09/03 14:18:43 UTC,SEA,09-MAR,46°F or higher,YES,46.47%,87.96%,41.00c,,--,--,RISKY,Safe,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",share_size_below_order_min_size,4.88
+09/03 14:18:43 UTC,DAL,09-MAR,82-83°F,YES,45.70%,81.16%,35.00c,,--,--,RISKY,Moderate,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",,5.71
+09/03 14:18:43 UTC,SEA,09-MAR,44-45°F,NO,39.63%,91.13%,51.00c,,--,--,RISKY,Safe,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",share_size_below_order_min_size,3.92
+09/03 14:18:43 UTC,DAL,09-MAR,80-81°F,NO,29.94%,94.40%,64.00c,,--,--,RISKY,Safe,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",share_size_below_order_min_size,3.64
+09/03 14:18:43 UTC,CHI,09-MAR,70-71°F,NO,23.98%,94.40%,70.00c,,--,--,RISKY,Safe,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",share_size_below_order_min_size,3.64
+09/03 14:18:43 UTC,ATL,09-MAR,76-77°F,NO,16.06%,94.40%,78.00c,,--,--,RISKY,Safe,policy:coverage_not_ok,mixed_rate_limited | modelos 1/5,"best_match, ecmwf, ecmwf_ens, gem ...",share_size_below_order_min_size,3.64

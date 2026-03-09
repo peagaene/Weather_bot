@@ -93,6 +93,45 @@ class WeatherModelsEnsembleTests(unittest.TestCase):
         self.assertGreater(today.effective_weights["nws"], later.effective_weights["nws"])
         self.assertLess(today.effective_weights["gfs"], later.effective_weights["gfs"])
 
+    def test_coverage_issue_type_and_failure_details_are_exposed(self) -> None:
+        city = CITY_CONFIGS[0]
+        forecasts = {
+            "best_match": [ModelForecast("best_match", "2026-03-08", 71.0)],
+        }
+
+        ensemble = build_ensemble_for_date(
+            city,
+            forecasts,
+            "2026-03-08",
+            provider_failures=["gfs", "ecmwf"],
+            provider_failure_details={"gfs": "HTTP 502", "ecmwf": "timeout"},
+        )
+
+        self.assertIsNotNone(ensemble)
+        assert ensemble is not None
+        self.assertEqual(ensemble.coverage_issue_type, "mixed")
+        self.assertEqual(ensemble.valid_model_count, 1)
+        self.assertGreaterEqual(ensemble.required_model_count, 5)
+        self.assertEqual(ensemble.provider_failure_details, {"gfs": "HTTP 502", "ecmwf": "timeout"})
+
+    def test_rate_limited_failures_get_specific_coverage_type(self) -> None:
+        city = CITY_CONFIGS[0]
+        forecasts = {
+            "best_match": [ModelForecast("best_match", "2026-03-08", 71.0)],
+        }
+
+        ensemble = build_ensemble_for_date(
+            city,
+            forecasts,
+            "2026-03-08",
+            provider_failures=["gfs", "ecmwf"],
+            provider_failure_details={"gfs": "HTTP 429 fetching ...", "ecmwf": "HTTP 429 fetching ..."},
+        )
+
+        self.assertIsNotNone(ensemble)
+        assert ensemble is not None
+        self.assertEqual(ensemble.coverage_issue_type, "mixed_rate_limited")
+
 
 if __name__ == "__main__":
     unittest.main()

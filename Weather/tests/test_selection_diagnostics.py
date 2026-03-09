@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import sys
 import unittest
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,17 +15,31 @@ from paperbot.selection import explain_blocked_opportunities
 
 
 class SelectionDiagnosticsTests(unittest.TestCase):
-    def test_explain_blocked_opportunities_includes_reason_and_plan_context(self) -> None:
+    def test_explain_blocked_opportunities_includes_reason_and_coverage_context(self) -> None:
         opportunity = SimpleNamespace(
             city_key="MIA",
             date_str="2026-03-08",
-            bucket="84-85°F",
+            bucket="84-85F",
             side="NO",
             edge=12.5,
             model_prob=66.0,
             price_cents=30.0,
+            agreement_models=4,
+            total_models=5,
+            agreement_pct=80.0,
+            agreement_summary="4/5",
+            agreeing_model_names=["nws", "weatherapi", "openweather", "visualcrossing"],
             confidence_tier="safe",
             risk_label="Safe",
+            signal_tier="A",
+            adversarial_score=74.2,
+            min_agreeing_model_edge=10.8,
+            coverage_issue_type="provider_failure",
+            valid_model_count=2,
+            required_model_count=5,
+            provider_failures=["gfs", "ecmwf"],
+            provider_failure_details={"gfs": "HTTP 502", "ecmwf": "timeout"},
+            degraded_reason="insufficient_model_coverage:2;provider_failures:ecmwf,gfs",
             market_slug="mia-market",
             event_slug="mia-event",
             token_id="token-1",
@@ -52,6 +66,13 @@ class SelectionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(blocked[0]["reason"], "plan:share_size_below_order_min_size")
         self.assertEqual(blocked[0]["plan_invalid_reason"], "share_size_below_order_min_size")
         self.assertEqual(blocked[0]["polymarket_url"], "https://polymarket.com/event/mia-event")
+        self.assertEqual(blocked[0]["coverage_issue_type"], "provider_failure")
+        self.assertEqual(blocked[0]["valid_model_count"], 2)
+        self.assertEqual(blocked[0]["required_model_count"], 5)
+        self.assertEqual(blocked[0]["provider_failures"], ["gfs", "ecmwf"])
+        self.assertEqual(blocked[0]["agreement_summary"], "4/5")
+        self.assertEqual(blocked[0]["signal_tier"], "A")
+        self.assertEqual(blocked[0]["agreeing_model_names"], ["nws", "weatherapi", "openweather", "visualcrossing"])
 
 
 if __name__ == "__main__":

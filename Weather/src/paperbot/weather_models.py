@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import lru_cache
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,33 @@ WEATHER_CALIBRATION_PATH = os.getenv(
     "WEATHER_CALIBRATION_PATH",
     str(Path(__file__).resolve().parents[2] / "export" / "calibration" / "weather_model_calibration.json"),
 )
+WEATHER_PROVIDER_CACHE_DIR = Path(
+    os.getenv(
+        "WEATHER_PROVIDER_CACHE_DIR",
+        str(Path(__file__).resolve().parents[2] / "export" / "cache" / "provider_responses"),
+    )
+)
+WEATHER_PROVIDER_CACHE_TTL_SECONDS = int(os.getenv("WEATHER_PROVIDER_CACHE_TTL_SECONDS", "300") or 300)
+WEATHER_PROVIDER_CACHE_MAX_STALE_SECONDS = int(
+    os.getenv("WEATHER_PROVIDER_CACHE_MAX_STALE_SECONDS", "900") or 900
+)
+WEATHER_PROVIDER_MAX_WORKERS = int(os.getenv("WEATHER_PROVIDER_MAX_WORKERS", "4") or 4)
+WEATHER_PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS = int(
+    os.getenv("WEATHER_PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS", "1800") or 1800
+)
+WEATHER_PROVIDER_AUTH_COOLDOWN_SECONDS = int(
+    os.getenv("WEATHER_PROVIDER_AUTH_COOLDOWN_SECONDS", "21600") or 21600
+)
+
+PROVIDER_CACHE_POLICY: dict[str, dict[str, int]] = {
+    "open_meteo": {"ttl": 300, "max_stale": 900},
+    "open_meteo_ensemble": {"ttl": 300, "max_stale": 900},
+    "weather_gov": {"ttl": 900, "max_stale": 1800},
+    "tomorrow": {"ttl": 3600, "max_stale": 10800},
+    "weatherapi": {"ttl": 1800, "max_stale": 7200},
+    "visualcrossing": {"ttl": 1800, "max_stale": 7200},
+    "openweather": {"ttl": 1800, "max_stale": 7200},
+}
 
 OPEN_METEO_MODELS: dict[str, str | None] = {
     "best_match": None,
@@ -55,6 +84,9 @@ ENSEMBLE_MODELS: dict[str, str] = {
     "ecmwf_ens": "ecmwf_ifs025",
     "icon_ens": "icon_seamless",
 }
+OPTIONAL_PROVIDER_NAMES = ("tomorrow", "weatherapi", "visualcrossing", "openweather")
+
+PROVIDER_COOLDOWNS: dict[str, float] = {}
 
 
 @dataclass
@@ -82,9 +114,12 @@ class EnsembleForecast:
     probabilistic_member_count: int = 0
     probabilistic_family_highs: dict[str, list[float]] | None = None
     valid_model_count: int = 0
+    required_model_count: int = 0
     coverage_ok: bool = False
+    coverage_issue_type: str | None = None
     degraded_reason: str | None = None
     provider_failures: list[str] | None = None
+    provider_failure_details: dict[str, str] | None = None
     effective_weights: dict[str, float] | None = None
     data_quality_score: float = 0.0
 
@@ -93,6 +128,40 @@ class EnsembleForecast:
 class ForecastFetchBundle:
     forecasts_by_model: dict[str, list[ModelForecast]]
     provider_failures: list[str]
+    provider_failure_details: dict[str, str] | None = None
+
+
+def _cache_file_for_url(url: str) -> Path:
+    WEATHER_PROVIDER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    digest = sha256(url.encode("utf-8")).hexdigest()
+    return WEATHER_PROVIDER_CACHE_DIR / f"{digest}.json"
+
+
+def _load_cached_response(url: str, *, max_age_seconds: int) -> Any | None:
+    cache_file = _cache_file_for_url(url)
+    try:
+        payload = json.loads(cache_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    fetched_at = float(payload.get("fetched_at", 0.0) or 0.0)
+    if fetched_at <= 0:
+        return None
+    age_seconds = max(0.0, time.time() - fetched_at)
+    if age_seconds > max_age_seconds:
+        return None
+    return payload.get("data")
+
+
+def _write_cached_response(url: str, data: Any) -> None:
+    cache_file = _cache_file_for_url(url)
+    payload = {
+        "fetched_at": time.time(),
+        "data": data,
+    }
+    try:
+        cache_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        return
 
 
 @lru_cache(maxsize=1)
@@ -271,7 +340,53 @@ def _robust_weighted_blend(
     return robust_mean, anchor, robust_scale
 
 
-def _request_json(url: str, *, timeout: float = 20.0, headers: dict[str, str] | None = None) -> Any:
+def _provider_cache_policy(provider_name: str | None) -> tuple[int, int]:
+    policy = PROVIDER_CACHE_POLICY.get(str(provider_name or "").strip().lower(), {})
+    ttl = int(policy.get("ttl", WEATHER_PROVIDER_CACHE_TTL_SECONDS))
+    max_stale = int(policy.get("max_stale", WEATHER_PROVIDER_CACHE_MAX_STALE_SECONDS))
+    return ttl, max_stale
+
+
+def _provider_cooldown_until(provider_name: str | None) -> float:
+    if not provider_name:
+        return 0.0
+    return float(PROVIDER_COOLDOWNS.get(str(provider_name).strip().lower(), 0.0) or 0.0)
+
+
+def _provider_in_cooldown(provider_name: str | None) -> bool:
+    until = _provider_cooldown_until(provider_name)
+    return until > time.time()
+
+
+def _set_provider_cooldown(provider_name: str | None, seconds: int) -> None:
+    if not provider_name or seconds <= 0:
+        return
+    PROVIDER_COOLDOWNS[str(provider_name).strip().lower()] = time.time() + float(seconds)
+
+
+def _clear_provider_cooldown(provider_name: str | None) -> None:
+    if not provider_name:
+        return
+    PROVIDER_COOLDOWNS.pop(str(provider_name).strip().lower(), None)
+
+
+def _request_json(
+    url: str,
+    *,
+    timeout: float = 20.0,
+    headers: dict[str, str] | None = None,
+    provider_name: str | None = None,
+) -> Any:
+    ttl_seconds, max_stale_seconds = _provider_cache_policy(provider_name)
+    if _provider_in_cooldown(provider_name):
+        stale = _load_cached_response(url, max_age_seconds=max_stale_seconds)
+        if stale is not None:
+            return stale
+        remaining = max(1, int(_provider_cooldown_until(provider_name) - time.time()))
+        raise RuntimeError(f"provider {provider_name} cooling down for {remaining}s")
+    cached = _load_cached_response(url, max_age_seconds=ttl_seconds)
+    if cached is not None:
+        return cached
     request = urllib.request.Request(
         url=url,
         headers={
@@ -283,13 +398,64 @@ def _request_json(url: str, *, timeout: float = 20.0, headers: dict[str, str] | 
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = response.read().decode("utf-8")
-            return json.loads(payload)
+            data = json.loads(payload)
+            _write_cached_response(url, data)
+            _clear_provider_cooldown(provider_name)
+            return data
     except urllib.error.HTTPError as err:
+        if err.code == 401:
+            _set_provider_cooldown(provider_name, WEATHER_PROVIDER_AUTH_COOLDOWN_SECONDS)
+        if err.code == 429:
+            _set_provider_cooldown(provider_name, WEATHER_PROVIDER_RATE_LIMIT_COOLDOWN_SECONDS)
+        if err.code == 429:
+            stale = _load_cached_response(url, max_age_seconds=max_stale_seconds)
+            if stale is not None:
+                return stale
         raise RuntimeError(f"HTTP {err.code} fetching {url}") from err
     except urllib.error.URLError as err:
+        stale = _load_cached_response(url, max_age_seconds=max_stale_seconds)
+        if stale is not None:
+            return stale
         raise RuntimeError(f"Network error fetching {url}: {err}") from err
     except json.JSONDecodeError as err:
         raise RuntimeError(f"Invalid JSON returned by {url}") from err
+
+
+def _summarize_provider_error(exc: Exception) -> str:
+    text = str(exc or "").strip() or exc.__class__.__name__
+    text = " ".join(text.split())
+    if len(text) > 160:
+        text = text[:157] + "..."
+    return text
+
+
+def _coverage_issue_type(
+    *,
+    valid_model_count: int,
+    min_models: int,
+    provider_failures: list[str] | None,
+    provider_failure_details: dict[str, str] | None,
+) -> str | None:
+    failures = list(provider_failures or [])
+    details = dict(provider_failure_details or {})
+    all_rate_limited = bool(failures) and all("HTTP 429" in str(details.get(name, "")) for name in failures)
+    if valid_model_count < min_models and failures:
+        return "mixed_rate_limited" if all_rate_limited else "mixed"
+    if failures:
+        return "rate_limited" if all_rate_limited else "provider_failure"
+    if valid_model_count < min_models:
+        return "insufficient_data"
+    return None
+
+
+def _effective_min_models(base_min_models: int) -> int:
+    disabled_optional = sum(
+        1
+        for provider_name in OPTIONAL_PROVIDER_NAMES
+        if _provider_in_cooldown(provider_name) and _provider_cooldown_until(provider_name) - time.time() > 300
+    )
+    adjusted = max(3, int(base_min_models) - disabled_optional)
+    return adjusted
 
 
 def _fetch_open_meteo_model(city: CityConfig, model_key: str) -> list[ModelForecast]:
@@ -305,7 +471,7 @@ def _fetch_open_meteo_model(city: CityConfig, model_key: str) -> list[ModelForec
     if model_name:
         params["models"] = model_name
     url = f"{OPEN_METEO_BASE_URL}?{urllib.parse.urlencode(params)}"
-    data = _request_json(url)
+    data = _request_json(url, provider_name="open_meteo")
     daily = data.get("daily") if isinstance(data, dict) else None
     if not isinstance(daily, dict):
         return []
@@ -341,7 +507,7 @@ def _fetch_open_meteo_ensemble_daily_highs(city: CityConfig, model_name: str, op
         "models": open_meteo_model,
     }
     url = f"{OPEN_METEO_ENSEMBLE_BASE_URL}?{urllib.parse.urlencode(params)}"
-    data = _request_json(url)
+    data = _request_json(url, provider_name="open_meteo_ensemble")
     hourly = data.get("hourly") if isinstance(data, dict) else None
     if not isinstance(hourly, dict):
         return {}
@@ -376,7 +542,7 @@ def _fetch_open_meteo_ensemble_daily_highs(city: CityConfig, model_name: str, op
 
 def _fetch_nws_daily(city: CityConfig) -> list[ModelForecast]:
     points_url = f"{WEATHER_GOV_BASE_URL}/points/{city.lat},{city.lon}"
-    points = _request_json(points_url)
+    points = _request_json(points_url, provider_name="weather_gov")
     properties = points.get("properties") if isinstance(points, dict) else None
     if not isinstance(properties, dict):
         return []
@@ -384,7 +550,7 @@ def _fetch_nws_daily(city: CityConfig) -> list[ModelForecast]:
     if not forecast_url:
         return []
 
-    forecast = _request_json(str(forecast_url))
+    forecast = _request_json(str(forecast_url), provider_name="weather_gov")
     periods = (((forecast or {}).get("properties") or {}).get("periods")) or []
     by_date: dict[str, float] = {}
     for period in periods:
@@ -421,7 +587,7 @@ def _fetch_tomorrow_daily(city: CityConfig) -> list[ModelForecast]:
         "apikey": TOMORROW_API_KEY,
     }
     url = f"https://api.tomorrow.io/v4/weather/forecast?{urllib.parse.urlencode(params)}"
-    data = _request_json(url)
+    data = _request_json(url, provider_name="tomorrow")
     daily = (((data or {}).get("timelines") or {}).get("daily")) or []
     output: list[ModelForecast] = []
     for item in daily:
@@ -454,7 +620,7 @@ def _fetch_weatherapi_daily(city: CityConfig) -> list[ModelForecast]:
         "alerts": "no",
     }
     url = f"https://api.weatherapi.com/v1/forecast.json?{urllib.parse.urlencode(params)}"
-    data = _request_json(url)
+    data = _request_json(url, provider_name="weatherapi")
     forecast_days = ((((data or {}).get("forecast")) or {}).get("forecastday")) or []
     output: list[ModelForecast] = []
     for item in forecast_days:
@@ -488,7 +654,7 @@ def _fetch_visualcrossing_daily(city: CityConfig) -> list[ModelForecast]:
         "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/"
         f"{urllib.parse.quote(location, safe='')}?{urllib.parse.urlencode(params)}"
     )
-    data = _request_json(url)
+    data = _request_json(url, provider_name="visualcrossing")
     days = (data or {}).get("days") or []
     output: list[ModelForecast] = []
     for item in days[:7]:
@@ -517,7 +683,7 @@ def _fetch_openweather_daily(city: CityConfig) -> list[ModelForecast]:
         "units": "imperial",
     }
     url = f"https://api.openweathermap.org/data/2.5/forecast?{urllib.parse.urlencode(params)}"
-    data = _request_json(url)
+    data = _request_json(url, provider_name="openweather")
     rows = (data or {}).get("list") or []
     by_date: dict[str, dict[str, float]] = {}
     for item in rows:
@@ -557,6 +723,7 @@ def _fetch_openweather_daily(city: CityConfig) -> list[ModelForecast]:
 def fetch_all_model_forecasts(city: CityConfig) -> ForecastFetchBundle:
     results: dict[str, list[ModelForecast]] = {}
     failures: list[str] = []
+    failure_details: dict[str, str] = {}
     fetchers: dict[str, Any] = {
         **{model_key: (lambda mk=model_key: _fetch_open_meteo_model(city, mk)) for model_key in OPEN_METEO_MODELS},
         "nws": lambda: _fetch_nws_daily(city),
@@ -567,35 +734,55 @@ def fetch_all_model_forecasts(city: CityConfig) -> ForecastFetchBundle:
         "visualcrossing": _fetch_visualcrossing_daily,
         "openweather": _fetch_openweather_daily,
     }
+    disabled_optional: set[str] = {
+        key for key in optional_fetchers if _provider_in_cooldown(key) and _provider_cooldown_until(key) - time.time() > 300
+    }
     for key, fetcher in optional_fetchers.items():
         fetchers[key] = lambda fn=fetcher: fn(city)
 
-    with ThreadPoolExecutor(max_workers=min(8, len(fetchers))) as executor:
+    with ThreadPoolExecutor(max_workers=min(max(1, WEATHER_PROVIDER_MAX_WORKERS), len(fetchers))) as executor:
         future_map = {executor.submit(fetcher): key for key, fetcher in fetchers.items()}
         for future in as_completed(future_map):
             key = future_map[future]
             try:
                 results[key] = future.result()
-            except Exception:
+            except Exception as exc:
                 results[key] = []
+                summary = _summarize_provider_error(exc)
+                if key in disabled_optional and ("HTTP 401" in summary or "cooling down" in summary):
+                    continue
                 failures.append(key)
-    return ForecastFetchBundle(forecasts_by_model=results, provider_failures=sorted(set(failures)))
+                failure_details[key] = summary
+    return ForecastFetchBundle(
+        forecasts_by_model=results,
+        provider_failures=sorted(set(failures)),
+        provider_failure_details={key: failure_details[key] for key in sorted(failure_details)},
+    )
 
 
-def fetch_probabilistic_daily_highs(city: CityConfig, date_strs: list[str]) -> tuple[dict[str, dict[str, list[float]]], list[str]]:
+def fetch_probabilistic_daily_highs(
+    city: CityConfig,
+    date_strs: list[str],
+) -> tuple[dict[str, dict[str, list[float]]], list[str], dict[str, str]]:
     by_date: dict[str, dict[str, list[float]]] = {date_str: {} for date_str in date_strs}
     failures: list[str] = []
+    failure_details: dict[str, str] = {}
+    if _provider_in_cooldown("open_meteo_ensemble") and _provider_cooldown_until("open_meteo_ensemble") - time.time() > 60:
+        remaining = max(1, int(_provider_cooldown_until("open_meteo_ensemble") - time.time()))
+        names = sorted(ENSEMBLE_MODELS.keys())
+        return by_date, names, {name: f"provider open_meteo_ensemble cooling down for {remaining}s" for name in names}
     for model_family, open_meteo_model in ENSEMBLE_MODELS.items():
         try:
             ensemble_rows = _fetch_open_meteo_ensemble_daily_highs(city, model_family, open_meteo_model)
-        except Exception:
+        except Exception as exc:
             failures.append(model_family)
+            failure_details[model_family] = _summarize_provider_error(exc)
             continue
         for date_str in date_strs:
             values = ensemble_rows.get(date_str) or []
             if values:
                 by_date.setdefault(date_str, {})[model_family] = values
-    return by_date, sorted(set(failures))
+    return by_date, sorted(set(failures)), {key: failure_details[key] for key in sorted(failure_details)}
 
 
 def build_ensemble_for_date(
@@ -604,6 +791,7 @@ def build_ensemble_for_date(
     date_str: str,
     probabilistic_highs: dict[str, list[float]] | None = None,
     provider_failures: list[str] | None = None,
+    provider_failure_details: dict[str, str] | None = None,
     horizon_days: int | None = None,
 ) -> EnsembleForecast | None:
     predictions: dict[str, float] = {}
@@ -647,8 +835,14 @@ def build_ensemble_for_date(
         probabilistic_consensus = max(0.0, min(1.0, 1.0 - (float(probabilistic_spread) / 8.0)))
         consensus = (model_consensus * 0.65) + (probabilistic_consensus * 0.35)
     valid_model_count = len(predictions)
-    min_models = int(os.getenv("WEATHER_MIN_VALID_MODELS", "5") or 5)
+    min_models = _effective_min_models(int(os.getenv("WEATHER_MIN_VALID_MODELS", "5") or 5))
     coverage_ok = valid_model_count >= min_models and not provider_failures
+    coverage_issue_type = _coverage_issue_type(
+        valid_model_count=valid_model_count,
+        min_models=min_models,
+        provider_failures=provider_failures,
+        provider_failure_details=provider_failure_details,
+    )
     degraded_reasons: list[str] = []
     if valid_model_count < min_models:
         degraded_reasons.append(f"insufficient_model_coverage:{valid_model_count}")
@@ -674,9 +868,12 @@ def build_ensemble_for_date(
         if probabilistic_values_by_family
         else None,
         valid_model_count=valid_model_count,
+        required_model_count=min_models,
         coverage_ok=coverage_ok,
+        coverage_issue_type=coverage_issue_type,
         degraded_reason=";".join(degraded_reasons) if degraded_reasons else None,
         provider_failures=sorted(provider_failures or []),
+        provider_failure_details=dict(provider_failure_details or {}) or None,
         effective_weights={key: round(value, 4) for key, value in effective_weights.items()},
         data_quality_score=_compute_data_quality_score(
             valid_model_count=valid_model_count,
@@ -692,8 +889,10 @@ def build_ensemble_for_date(
 
 def fetch_city_ensembles(city: CityConfig, date_strs: list[str]) -> dict[str, EnsembleForecast]:
     fetch_bundle = fetch_all_model_forecasts(city)
-    probabilistic_by_date, probabilistic_failures = fetch_probabilistic_daily_highs(city, date_strs)
+    probabilistic_by_date, probabilistic_failures, probabilistic_failure_details = fetch_probabilistic_daily_highs(city, date_strs)
     provider_failures = sorted(set(fetch_bundle.provider_failures + probabilistic_failures))
+    provider_failure_details = dict(fetch_bundle.provider_failure_details or {})
+    provider_failure_details.update(probabilistic_failure_details or {})
     output: dict[str, EnsembleForecast] = {}
     for horizon_days, date_str in enumerate(date_strs):
         ensemble = build_ensemble_for_date(
@@ -702,6 +901,7 @@ def fetch_city_ensembles(city: CityConfig, date_strs: list[str]) -> dict[str, En
             date_str,
             probabilistic_by_date.get(date_str) or [],
             provider_failures=provider_failures,
+            provider_failure_details=provider_failure_details,
             horizon_days=horizon_days,
         )
         if ensemble is not None:

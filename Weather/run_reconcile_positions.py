@@ -4,19 +4,16 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-load_dotenv(ROOT / ".env", override=False)
-
+from paperbot.env import load_app_env
 from paperbot.reconciliation import sync_open_positions
 from paperbot.storage import WeatherBotStorage
 
+load_app_env(ROOT)
 
 def _resolve_path(value: str) -> Path:
     path = Path(value)

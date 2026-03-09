@@ -1,0 +1,472 @@
+[1mdiff --git a/.gitignore b/.gitignore[m
+[1mnew file mode 100644[m
+[1mindex 0000000..597944b[m
+[1m--- /dev/null[m
+[1m+++ b/.gitignore[m
+[36m@@ -0,0 +1,43 @@[m
+[32m+[m[32m# Python cache / build artifacts[m
+[32m+[m[32m__pycache__/[m
+[32m+[m[32m*.py[cod][m
+[32m+[m[32m*.pyo[m
+[32m+[m[32m*.pyd[m
+[32m+[m[32m.pytest_cache/[m
+[32m+[m[32m.mypy_cache/[m
+[32m+[m[32m.ruff_cache/[m
+[32m+[m[32m.coverage[m
+[32m+[m[32m.coverage.*[m
+[32m+[m[32mbuild/[m
+[32m+[m[32mdist/[m
+[32m+[m[32m*.egg-info/[m
+[32m+[m
+[32m+[m[32m# Virtual environments[m
+[32m+[m[32m.venv/[m
+[32m+[m[32mvenv/[m
+[32m+[m[32menv/[m
+[32m+[m
+[32m+[m[32m# Local secrets[m
+[32m+[m[32m.env[m
+[32m+[m[32m.env.*[m
+[32m+[m[32m!.env.example[m
+[32m+[m[32m!.env.*.example[m
+[32m+[m
+[32m+[m[32m# IDE / OS noise[m
+[32m+[m[32m.DS_Store[m
+[32m+[m[32mThumbs.db[m
+[32m+[m
+[32m+[m[32m# Project runtime outputs[m
+[32m+[m[32mWeather/export/[m
+[32m+[m[32mWeather/export/**[m
+[32m+[m[32mWeather/src/**/__pycache__/[m
+[32m+[m[32mWeather/*.log[m
+[32m+[m[32mWeather/*.json[m
+[32m+[m[32m!Weather/.env.example[m
+[32m+[m
+[32m+[m[32mCripto/export/[m
+[32m+[m[32mCripto/export/**[m
+[32m+[m[32mCripto/src/**/__pycache__/[m
+[32m+[m[32mCripto/*.log[m
+[32m+[m[32mCripto/*.json[m
+[32m+[m[32m!Cripto/.env.example[m
+[1mdiff --git a/Weather/.env.example b/Weather/.env.example[m
+[1mnew file mode 100644[m
+[1mindex 0000000..95166d2[m
+[1m--- /dev/null[m
+[1m+++ b/Weather/.env.example[m
+[36m@@ -0,0 +1,51 @@[m
+[32m+[m[32mPAPERBOT_SYMBOLS=BTCUSDC,ETHUSDC[m
+[32m+[m[32mPAPERBOT_TICKS=300[m
+[32m+[m[32mPAPERBOT_INTERVAL_SECONDS=1.0[m
+[32m+[m[32mFEED_MODE=polymarket[m
+[32m+[m[32mPOLYMARKET_CLOB_BASE_URL=https://clob.polymarket.com[m
+[32m+[m[32mPOLYMARKET_GAMMA_BASE_URL=https://gamma-api.polymarket.com[m
+[32m+[m[32mPOLYMARKET_REQUEST_TIMEOUT=4.0[m
+[32m+[m[32m# Map symbol->tokenId. Example: BTCUSDC:0x1234...,ETHUSDC:0x5678...[m
+[32m+[m[32mPOLYMARKET_TOKEN_MAP=[m
+[32m+[m
+[32m+[m[32mRISK_MAX_RISK_PER_TRADE=0.01[m
+[32m+[m[32mRISK_MAX_DAILY_LOSS=0.03[m
+[32m+[m[32mRISK_MAX_EXPOSURE_PER_SYMBOL=250.0[m
+[32m+[m[32mRISK_MAX_EXPOSURE_TOTAL=600.0[m
+[32m+[m[32mRISK_STOP_LOSS_PCT=0.08[m
+[32m+[m[32mRISK_TAKE_PROFIT_PCT=0.12[m
+[32m+[m[32mRISK_MIN_SIGNAL_SCORE=0.55[m
+[32m+[m
+[32m+[m[32mSTRAT_WINDOW=12[m
+[32m+[m[32mSTRAT_THRESHOLD=0.0025[m
+[32m+[m[32mSTRAT_SIZE_BPS=0.20[m
+[32m+[m
+[32m+[m[32mPAPERBOT_BANKROLL_USD=1000[m
+[32m+[m[32mPAPERBOT_KELLY_FRACTION=0.25[m
+[32m+[m[32mWEATHER_MIN_EDGE=10[m
+[32m+[m[32mWEATHER_MIN_MODEL_PROB=15[m
+[32m+[m[32mWEATHER_MIN_CONSENSUS=0.35[m
+[32m+[m[32mWEATHER_MIN_PRICE_CENTS=10[m
+[32m+[m[32mWEATHER_MAX_PRICE_CENTS=65[m
+[32m+[m[32mWEATHER_MAX_MODEL_SPREAD=4.0[m
+[32m+[m[32mWEATHER_MAX_SHARE_SIZE=400[m
+[32m+[m[32mWEATHER_MAX_ORDERS_PER_EVENT=1[m
+[32m+[m[32mWEATHER_EXECUTE_TOP=1[m
+[32m+[m[32mWEATHER_HISTORY_CSV=export/history/weather_model_scan_log.csv[m
+[32m+[m[32mWEATHER_LATEST_JSON=export/history/weather_model_latest.json[m
+[32m+[m[32mWEATHER_STATE_JSON=export/state/trading_state.json[m
+[32m+[m[32mWEATHER_LOCK_FILE=export/state/trading_state.lock[m
+[32m+[m[32mWEATHER_DAILY_LIVE_LIMIT=3[m
+[32m+[m[32mWEATHER_CITY_COOLDOWN_MINUTES=180[m
+[32m+[m[32mWEATHER_EVENT_COOLDOWN_MINUTES=720[m
+[32m+[m[32mWEATHER_BUCKET_COOLDOWN_MINUTES=360[m
+[32m+[m[32mWEATHER_REPLACE_PRICE_THRESHOLD_CENTS=1.0[m
+[32m+[m
+[32m+[m[32mPOLYMARKET_CLOB_HOST=https://clob.polymarket.com[m
+[32m+[m[32mPOLYMARKET_CHAIN_ID=137[m
+[32m+[m[32mPOLYMARKET_SIGNATURE_TYPE=0[m
+[32m+[m[32mPOLYMARKET_FUNDER=[m
+[32m+[m[32mPOLYMARKET_PRIVATE_KEY=[m
+[32m+[m[32mPOLYMARKET_API_KEY=[m
+[32m+[m[32mPOLYMARKET_API_SECRET=[m
+[32m+[m[32mPOLYMARKET_API_PASSPHRASE=[m
+[1mdiff --git a/Weather/README.md b/Weather/README.md[m
+[1mnew file mode 100644[m
+[1mindex 0000000..5c3137d[m
+[1m--- /dev/null[m
+[1m+++ b/Weather/README.md[m
+[36m@@ -0,0 +1,202 @@[m
+[32m+[m[32m﻿# Paper Bot (Polymarket-style) - MVP de testes sem dinheiro real[m
+[32m+[m
+[32m+[m[32mRepositório focado em simulação (`paper`) com arquitetura de produção (feed, estratégia, risco, execução e painel simples).[m
+[32m+[m
+[32m+[m[32m## Componentes prontos[m
+[32m+[m
+[32m+[m[32m- `src/paperbot/main.py`: CLI de execução da simulação.[m
+[32m+[m[32m- `src/paperbot/feeds.py`: `PolymarketFeed` (preço real via REST Polymarket) e `SyntheticFeed` (fallback local).[m
+[32m+[m[32m- `src/paperbot/strategy.py`: estratégia de momentum.[m
+[32m+[m[32m- `src/paperbot/risk.py`: controle de risco (stop loss, limites, rejeições).[m
+[32m+[m[32m- `src/paperbot/execution.py`: execução em ledger interno (paper).[m
+[32m+[m[32m- `src/paperbot/engine.py`: orquestração tick -> sinal -> risco -> execução -> histórico.[m
+[32m+[m[32m- `src/paperbot/state.py`: estado da sessão e exposição.[m
+[32m+[m[32m- `src/paperbot/dashboard.py`: visualização (somente leitura dos exports).[m
+[32m+[m[32m- `.env.example`: parâmetros base e fonte de dados.[m
+[32m+[m
+[32m+[m[32m## Como rodar[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_paper.py --ticks 200 --symbols BTCUSDC,ETHUSDC --polymarket-token-map BTCUSDC:0xABC...,ETHUSDC:0xDEF...[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mPara gerar sinal direcional em tempo real para BTC/ETH:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_signal.py --product-id BTC-USD --horizons 5,15[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m### Modo de feed[m
+[32m+[m
+[32m+[m[32m- Padrão atual: `polymarket`.[m
+[32m+[m[32m- Recomendado deixar `POLYMARKET_TOKEN_MAP` preenchido com os token ids.[m
+[32m+[m[32m- Para voltar ao gerador sintético local:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_paper.py --feed-mode synthetic --ticks 200 --symbols BTCUSDC,ETHUSDC[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m### Dashboard (somente leitura)[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpip install -r requirements.txt[m
+[32m+[m[32mstreamlit run dashboard.py[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mA simulação continua sendo paper: não há envio de ordens reais.[m
+[32m+[m
+[32m+[m[32m## Scanner Degen Doppler -> Polymarket[m
+[32m+[m
+[32m+[m[32mO repositório também possui um scanner para mercados de clima do `degendoppler.com`.[m
+[32m+[m[32mEle replica o cálculo rápido do site usando:[m
+[32m+[m
+[32m+[m[32m- `Open-Meteo` para forecast[m
+[32m+[m[32m- `/api/markets` do próprio Degen Doppler para os buckets do Polymarket[m
+[32m+[m[32m- sizing via `fractional Kelly`[m
+[32m+[m
+[32m+[m[32mExemplo:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_degendoppler.py --min-edge 12 --top 5 --export-json export/degendoppler_scan.json[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mSaída:[m
+[32m+[m
+[32m+[m[32m- oportunidades ranqueadas[m
+[32m+[m[32m- `token_id` de `YES` ou `NO` para cada mercado[m
+[32m+[m[32m- plano de ordem sugerido com `stake_usd` e `limit_price_cents`[m
+[32m+[m
+[32m+[m[32mObservação: o script ainda trabalha em `dry-run` e não envia ordens reais. Isso evita acoplar o projeto a chaves privadas antes de validarmos o scanner.[m
+[32m+[m
+[32m+[m[32m## Scanner Direto de Modelos -> Polymarket[m
+[32m+[m
+[32m+[m[32mO modo recomendado agora é usar previsões diretas dos modelos, sem depender do Degen Doppler como fonte principal.[m
+[32m+[m
+[32m+[m[32mO comando novo:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_weather_models.py --top 5 --min-edge 10 --min-consensus 0.35[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mEsse fluxo usa:[m
+[32m+[m
+[32m+[m[32m- `Open-Meteo` com múltiplos modelos (`best_match`, `GFS`, `ECMWF`, `ICON`, `GEM`, `JMA`)[m
+[32m+[m[32m- `weather.gov` (`NWS`) como fonte oficial adicional[m
+[32m+[m[32m- `Gamma API` do Polymarket para descobrir os buckets e `token_id`[m
+[32m+[m
+[32m+[m[32mO ensemble calcula:[m
+[32m+[m
+[32m+[m[32m- temperatura prevista combinada[m
+[32m+[m[32m- spread entre modelos[m
+[32m+[m[32m- `sigma` adaptativo[m
+[32m+[m[32m- `consensus_score` para filtrar cenários com muita divergência[m
+[32m+[m
+[32m+[m[32mO scanner antigo `run_degendoppler.py` continua disponível como referência/benchmark.[m
+[32m+[m
+[32m+[m[32m### Filtros e risco[m
+[32m+[m
+[32m+[m[32mO comando novo agora aceita filtros práticos para operar de forma mais conservadora:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_weather_models.py --top 5 --min-edge 15 --min-consensus 0.50 --max-price-cents 60 --max-spread 3.0[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mFiltros úteis:[m
+[32m+[m
+[32m+[m[32m- `--min-price-cents`[m
+[32m+[m[32m- `--min-edge`[m
+[32m+[m[32m- `--min-model-prob`[m
+[32m+[m[32m- `--min-consensus`[m
+[32m+[m[32m- `--max-price-cents`[m
+[32m+[m[32m- `--max-spread`[m
+[32m+[m[32m- `--max-share-size`[m
+[32m+[m[32m- `--max-orders-per-event`[m
+[32m+[m
+[32m+[m[32m### Histórico persistente[m
+[32m+[m
+[32m+[m[32mPor padrão cada execução salva:[m
+[32m+[m
+[32m+[m[32m- CSV append-only: `export/history/weather_model_scan_log.csv`[m
+[32m+[m[32m- último snapshot JSON: `export/history/weather_model_latest.json`[m
+[32m+[m
+[32m+[m[32mVocê pode desativar isso com:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_weather_models.py --no-history[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m### Dry-run e live[m
+[32m+[m
+[32m+[m[32mO fluxo padrão é `dry-run`: ele gera o plano e simula a execução sem enviar ordem.[m
+[32m+[m
+[32m+[m[32mPara executar só os melhores planos em modo real:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_weather_models.py --live --execute-top 1[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mPara o modo `live`, preencha no `.env`:[m
+[32m+[m
+[32m+[m[32m- `POLYMARKET_PRIVATE_KEY`[m
+[32m+[m[32m- `POLYMARKET_API_KEY`[m
+[32m+[m[32m- `POLYMARKET_API_SECRET`[m
+[32m+[m[32m- `POLYMARKET_API_PASSPHRASE`[m
+[32m+[m
+[32m+[m[32mSe as credenciais de API não estiverem preenchidas, o cliente tenta derivá-las automaticamente a partir da chave privada.[m
+[32m+[m
+[32m+[m[32m### Proteções operacionais[m
+[32m+[m
+[32m+[m[32mO projeto agora também suporta:[m
+[32m+[m
+[32m+[m[32m- limite de ordens `live` por dia[m
+[32m+[m[32m- cooldown por cidade[m
+[32m+[m[32m- cooldown por evento[m
+[32m+[m[32m- cooldown por bucket/side[m
+[32m+[m[32m- estado persistente em `export/state/trading_state.json`[m
+[32m+[m
+[32m+[m[32mExemplo:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_weather_models.py --live --execute-top 1 --daily-live-limit 3 --bucket-cooldown-minutes 360[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m### Cancel / Replace[m
+[32m+[m
+[32m+[m[32mPara cancelar ordens abertas parecidas e repostar no novo preço:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython run_weather_models.py --live --execute-top 1 --replace-open-orders --replace-price-threshold-cents 1.0[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mSem `--replace-open-orders`, o bot bloqueia nova ordem quando já existe ordem aberta do mesmo lado para o mesmo `token_id`.[m
+[32m+[m
+[32m+[m[32m## Arquivos de exporto[m
+[32m+[m
+[32m+[m[32m- CSV: `export/paper_YYYYMMDD_HHMMSS...csv`[m
+[32m+[m[32m- JSON: opcional (via variável de ambiente interna)[m
+[32m+[m
+[32m+[m[32m## Parâmetros importantes[m
+[32m+[m
+[32m+[m[32m- Feed real Polymarket:[m
+[32m+[m[32m  - `--feed-mode polymarket`[m
+[32m+[m[32m  - `--polymarket-token-map BTCUSDC:token_id,ETHUSDC:token_id`[m
+[32m+[m[32m  - `--polymarket-clob-base-url`[m
+[32m+[m[32m  - `--polymarket-gamma-base-url`[m
+[32m+[m[32m  - `--polymarket-request-timeout`[m
+[32m+[m[32m  - Se estiver usando múltiplos mercados com mesmo ativo e horizonte (ex.: 5m/15m), é necessário usar os 4 símbolos reais de mercado do Polymarket no map (ex.: `BTC-5m-market`, `BTC-15m-market`, etc), não apenas `BTC5m`.[m
+[32m+[m[32m- Estratégia:[m
+[32m+[m[32m  - `--strategy-window`[m
+[32m+[m[32m  - `--strategy-threshold`[m
+[32m+[m[32m  - `--strategy-size-bps`[m
+[32m+[m[32m- Sinal em tempo real:[m
+[32m+[m[32m  - `python run_signal.py --product-id BTC-USD --horizons 5,15`[m
+[32m+[m[32m  - usa candles públicos de `Coinbase Exchange`[m
+[32m+[m[32m  - retorna `UP`, `DOWN` ou `NEUTRAL` com confiança[m
+[32m+[m[32m- Risco:[m
+[32m+[m[32m  - `--risk-max-trade`[m
+[32m+[m[32m  - `--risk-max-daily-loss`[m
+[32m+[m[32m  - `--risk-max-symbol`[m
+[32m+[m[32m  - `--risk-max-total`[m
+[32m+[m[32m  - `--risk-min-score`[m
+[32m+[m[32m  - `--risk-stop`[m
+[32m+[m[32m  - `--risk-take`[m
+[1mdiff --git a/Weather/backtest_signal.py b/Weather/backtest_signal.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..3633b82[m
+[1m--- /dev/null[m
+[1m+++ b/Weather/backtest_signal.py[m
+[36m@@ -0,0 +1,16 @@[m
+[32m+[m[32mfrom __future__ import annotations[m
+[32m+[m
+[32m+[m[32mimport sys[m
+[32m+[m[32mfrom pathlib import Path[m
+[32m+[m
+[32m+[m
+[32m+[m[32mROOT = Path(__file__).resolve().parent[m
+[32m+[m[32mSRC = ROOT / "src"[m
+[32m+[m[32mif str(SRC) not in sys.path:[m
+[32m+[m[32m    sys.path.insert(0, str(SRC))[m
+[32m+[m
+[32m+[m[32mfrom paperbot.realtime_signal import main[m
+[32m+[m
+[32m+[m
+[32m+[m[32mif __name__ == "__main__":[m
+[32m+[m[32m    main()[m
+[1mdiff --git a/Weather/dashboard.py b/Weather/dashboard.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..b992dc3[m
+[1m--- /dev/null[m
+[1m+++ b/Weather/dashboard.py[m
+[36m@@ -0,0 +1,854 @@[m
+[32m+[m[32mfrom __future__ import annotations[m
+[32m+[m
+[32m+[m[32mimport json[m
+[32m+[m[32mimport sys[m
+[32m+[m[32mfrom dataclasses import asdict[m
+[32m+[m[32mfrom datetime import timedelta[m
+[32m+[m[32mfrom pathlib import Path[m
+[32m+[m
+[32m+[m[32mimport pandas as pd[m
+[32m+[m[32mimport streamlit as st[m
+[32m+[m[32mfrom streamlit.components.v1 import html[m
+[32m+[m
+[32m+[m[32mROOT = Path(__file__).resolve().parent[m
+[32m+[m[32mSRC = ROOT / "src"[m
+[32m+[m[32mif str(SRC) not in sys.path:[m
+[32m+[m[32m    sys.path.insert(0, str(SRC))[m
+[32m+[m
+[32m+[m[32mfrom paperbot.realtime_signal import aggregate_candles, append_prediction_log, build_signal_for_interval, fetch_candles, split_closed_and_live_candles[m
+[32m+[m
+[32m+[m
+[32m+[m[32mASSET_OPTIONS = ["BTC-USD", "ETH-USD"][m
+[32m+[m[32mTIMEFRAME_OPTIONS = [5, 15][m
+[32m+[m
+[32m+[m
+[32m+[m[32mst.set_page_config(page_title="Crypto Signal Dashboard", layout="wide", initial_sidebar_state="collapsed")[m
+[32m+[m
+[32m+[m[32mst.markdown([m
+[32m+[m[32m    """[m
+[32m+[m[32m    <style>[m
+[32m+[m[32m        .stApp {[m
+[32m+[m[32m            background:[m
+[32m+[m[32m                radial-gradient(circle at top left, rgba(255, 255, 255, 0.03), transparent 32%),[m
+[32m+[m[32m                radial-gradient(circle at bottom right, rgba(255, 255, 255, 0.02), transparent 28%),[m
+[32m+[m[32m                linear-gradient(180deg, #010101 0%, #0a0a0a 100%);[m
+[32m+[m[32m            color: #e5eefb;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .stApp [data-testid="stHeader"] {[m
+[32m+[m[32m            background: rgba(1, 1, 1, 0.0);[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .stApp [data-testid="stSidebar"],[m
+[32m+[m[32m        .stApp [data-testid="collapsedControl"] {[m
+[32m+[m[32m            display: none;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .block-container {[m
+[32m+[m[32m            padding-top: 1.2rem;[m
+[32m+[m[32m            padding-bottom: 1.5rem;[m
+[32m+[m[32m            max-width: 1500px;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        div[data-testid="stMetric"] {[m
+[32m+[m[32m            background: linear-gradient(180deg, rgba(8, 8, 8, 0.96), rgba(18, 18, 18, 0.92));[m
+[32m+[m[32m            border: 1px solid rgba(148, 163, 184, 0.12);[m
+[32m+[m[32m            border-radius: 16px;[m
+[32m+[m[32m            padding: 10px 14px;[m
+[32m+[m[32m            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.20);[m
+[32m+[m[32m        }[m
+[32m+[m[32m        div[data-testid="stMetric"] label,[m
+[32m+[m[32m        div[data-testid="stMetric"] [data-testid="stMetricLabel"] {[m
+[32m+[m[32m            color: #8fa6c3 !important;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        div[data-testid="stMetric"] [data-testid="stMetricValue"] {[m
+[32m+[m[32m            color: #f8fbff !important;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        div[data-testid="stDataFrame"] {[m
+[32m+[m[32m            border-radius: 16px;[m
+[32m+[m[32m            overflow: hidden;[m
+[32m+[m[32m            border: 1px solid rgba(148, 163, 184, 0.10);[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .terminal-shell, .control-shell {[m
+[32m+[m[32m            background: linear-gradient(180deg, rgba(5, 5, 5, 0.98), rgba(12, 12, 12, 0.95));[m
+[32m+[m[32m            border: 1px solid rgba(148, 163, 184, 0.12);[m
+[32m+[m[32m            border-radius: 22px;[m
+[32m+[m[32m            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .terminal-shell {[m
+[32m+[m[32m            padding: 16px;[m
+[32m+[m[32m            margin-top: 12px;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .control-shell {[m
+[32m+[m[32m            padding: 14px 16px 8px 16px;[m
+[32m+[m[32m            margin: 10px 0 14px 0;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .terminal-topbar {[m
+[32m+[m[32m            display: flex;[m
+[32m+[m[32m            justify-content: space-between;[m
+[32m+[m[32m            align-items: center;[m
+[32m+[m[32m            gap: 12px;[m
+[32m+[m[32m            padding: 8px 10px 14px 10px;[m
+[32m+[m[32m            border-bottom: 1px solid rgba(148, 163, 184, 0.10);[m
+[32m+[m[32m            margin-bottom: 12px;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .terminal-title {[m
+[32m+[m[32m            font-size: 1.05rem;[m
+[32m+[m[32m            font-weight: 700;[m
+[32m+[m[32m            color: #f8fbff;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .terminal-subtitle {[m
+[32m+[m[32m            font-size: 0.85rem;[m
+[32m+[m[32m            color: #8fa6c3;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        .section-label {[m
+[32m+[m[32m            font-size: 0.82rem;[m
+[32m+[m[32m            text-transform: uppercase;[m
+[32m+[m[32m            letter-spacing: 0.08em;[m
+[32m+[m[32m            color: #7f93ad;[m
+[32m+[m[32m            margin-bottom: 8px;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        div[data-testid="stSelectbox"] > label {[m
+[32m+[m[32m            color: #8fa6c3 !important;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        div[data-testid="stSelectbox"] [data-baseweb="select"] > div {[m
+[32m+[m[32m            background: linear-gradient(180deg, rgba(8, 8, 8, 0.96), rgba(18, 18, 18, 0.92));[m
+[32m+[m[32m            border: 1px solid rgba(148, 163, 184, 0.12);[m
+[32m+[m[32m            border-radius: 16px;[m
+[32m+[m[32m            min-height: 84px;[m
+[32m+[m[32m            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.20);[m
+[32m+[m[32m        }[m
+[32m+[m[32m        div[data-testid="stSelectbox"] [data-baseweb="select"] > div > div {[m
+[32m+[m[32m            padding-top: 10px;[m
+[32m+[m[32m            padding-bottom: 10px;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        div[data-testid="stSelectbox"] [data-baseweb="select"] span {[m
+[32m+[m[32m            color: #f8fbff;[m
+[32m+[m[32m            font-size: 1.55rem;[m
+[32m+[m[32m            font-weight: 700;[m
+[32m+[m[32m            line-height: 1.2;[m
+[32m+[m[32m            font-family: inherit;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        div[data-testid="stSelectbox"] svg {[m
+[32m+[m[32m            color: #8fa6c3;[m
+[32m+[m[32m     

@@ -59,6 +59,37 @@ class PolicyAndDatesTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "signal_tier_not_actionable")
 
+    def test_policy_allows_fallback_coverage_for_strong_4_of_4_consensus(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "bucket": "80-81Ã‚Â°F",
+                "consensus_score": 0.74,
+                "spread": 1.1,
+                "sigma": 1.9,
+                "ensemble_prediction": 80.5,
+                "confidence_tier": "safe",
+                "signal_tier": "C",
+                "edge": 28.0,
+                "min_agreeing_model_edge": 18.0,
+                "price_cents": 32.0,
+                "coverage_ok": False,
+                "coverage_issue_type": "provider_failure",
+                "valid_model_count": 4,
+                "required_model_count": 4,
+                "agreement_models": 4,
+                "total_models": 4,
+                "provider_failures": ["best_match", "ecmwf", "gfs", "icon", "gem", "jma", "ecmwf_ens", "gfs_ens", "icon_ens"],
+                "degraded_reason": "provider_failures:best_match,ecmwf,gfs,icon,gem,jma,ecmwf_ens,gfs_ens,icon_ens",
+                "executable_quality_score": 0.82,
+                "data_quality_score": 0.35,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
+
 
 if __name__ == "__main__":
     unittest.main()

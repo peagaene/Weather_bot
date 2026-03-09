@@ -8,12 +8,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-
 ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT / ".env", override=False)
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
+from paperbot.env import load_app_env
+
+load_app_env(ROOT)
 
 def _run_scan(*, top: int, min_edge: float, min_consensus: float) -> subprocess.CompletedProcess[str]:
     command = [

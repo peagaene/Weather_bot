@@ -2,6 +2,27 @@
 
 Repositório focado em simulação (`paper`) com arquitetura de produção (feed, estratégia, risco, execução e painel simples).
 
+## Seguranca
+
+- Veja [SECURITY.md](/C:/Bot_poly/Weather/SECURITY.md) para o fluxo recomendado de segredos e compartilhamento.
+- Para carregar segredos fora do repositório:
+
+```bash
+set WEATHER_ENV_PATH=C:\segredos\weather.env
+```
+
+- Para usar apenas variaveis de ambiente do sistema:
+
+```bash
+set WEATHER_SKIP_DOTENV=1
+```
+
+- Para importar segredos para o perfil do Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Bot_poly\Weather\set_weather_secrets_windows.ps1 -EnvFile C:\segredos\weather.env
+```
+
 ## Componentes prontos
 
 - `src/paperbot/main.py`: CLI de execução da simulação.
@@ -45,6 +66,18 @@ streamlit run dashboard.py
 
 A simulação continua sendo paper: não há envio de ordens reais.
 
+### Validacao local segura
+
+```bat
+C:\Bot_poly\Weather\run_validation_local_secure.bat
+```
+
+### Backup seguro do projeto
+
+```bash
+python C:\Bot_poly\Weather\run_safe_backup.py
+```
+
 ## Scanner Degen Doppler -> Polymarket
 
 O repositório também possui um scanner para mercados de clima do `degendoppler.com`.
@@ -76,6 +109,12 @@ O comando novo:
 
 ```bash
 python run_weather_models.py --top 5 --min-edge 10 --min-consensus 0.35
+```
+
+Para gerar uma saida segura para compartilhar:
+
+```bash
+python run_weather_models.py --top 5 --safe-share --json
 ```
 
 Esse fluxo usa:

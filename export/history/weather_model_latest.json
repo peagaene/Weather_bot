@@ -1,0 +1,28 @@
+{
+  "generated_at": "2026-03-08T07:03:18.496023+00:00",
+  "run_id": "834fecd6a6c4",
+  "filters": {
+    "min_edge": 15.0,
+    "min_model_prob": 15.0,
+    "min_consensus": 0.5,
+    "min_price_cents": 10.0,
+    "max_price_cents": 60.0,
+    "max_spread": 3.0,
+    "max_share_size": 100.0,
+    "max_orders_per_event": 1,
+    "lock_file": "export\\state\\trading_state.lock",
+    "live": false,
+    "execute_top": 0,
+    "daily_live_limit": 3,
+    "city_cooldown_minutes": 180,
+    "event_cooldown_minutes": 720,
+    "bucket_cooldown_minutes": 360,
+    "replace_open_orders": false,
+    "replace_price_threshold_cents": 1.0
+  },
+  "raw_count": 6,
+  "count": 0,
+  "opportunities": [],
+  "order_plans": [],
+  "executions": []
+}

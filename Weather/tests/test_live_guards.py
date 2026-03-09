@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from paperbot.live_trader import _extract_allowance_usd, execute_order_plan
 import run_weather_models
+import run_auto_trade
 
 
 class LiveGuardsTests(unittest.TestCase):
@@ -129,10 +130,33 @@ class LiveGuardsTests(unittest.TestCase):
                 clear=False,
             ),
             patch("run_auto_trade._load_replay_gate", return_value=(False, "replay gate exists but is not approved")),
+            patch(
+                "run_auto_trade.get_account_snapshot",
+                return_value={"ok": True, "collateral_balance_usd": 10.0, "collateral_allowance_usd": 10.0},
+            ),
+            patch(
+                "run_auto_trade.fetch_public_wallet_snapshot",
+                return_value={"ok": True, "liquid_cash_usd": 10.0},
+            ),
         ):
             import run_auto_trade
 
             run_auto_trade._preflight_or_raise(live=True, execute_top=1)
+
+    def test_auto_trade_detects_rate_limited_snapshot(self) -> None:
+        payload = {
+            "blocked_opportunities": [
+                {
+                    "coverage_issue_type": "mixed_rate_limited",
+                    "provider_failure_details": {"gfs": "HTTP 429 fetching ..."},
+                }
+            ]
+        }
+        self.assertTrue(run_auto_trade._is_rate_limited_snapshot(payload))
+        self.assertEqual(
+            run_auto_trade._next_sleep_seconds(base_interval_seconds=60, consecutive_rate_limited_cycles=2),
+            180,
+        )
 
 
 if __name__ == "__main__":

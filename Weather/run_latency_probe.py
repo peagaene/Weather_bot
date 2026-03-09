@@ -6,20 +6,17 @@ import sys
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-load_dotenv(ROOT / ".env", override=False)
-
+from paperbot.env import load_app_env
 from paperbot.live_trader import _build_client, get_account_snapshot
 from paperbot.wallet_chain import resolve_public_wallet_address
 from paperbot.polymarket_account import fetch_account_activity, fetch_open_positions
 
+load_app_env(ROOT)
 
 def _measure(label: str, fn, *, attempts: int = 3) -> dict[str, float | str]:
     samples: list[float] = []

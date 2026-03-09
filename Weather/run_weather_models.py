@@ -9,16 +9,12 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-load_dotenv(ROOT / ".env", override=False)
-
+from paperbot.env import load_app_env
 from paperbot.history import append_csv_rows, write_json
 from paperbot.live_trader import execute_order_plan, sync_live_exchange_state
 from paperbot.polymarket_live import build_order_plan, summarize_plan
@@ -28,6 +24,7 @@ from paperbot.selection import explain_blocked_opportunities, filter_opportuniti
 from paperbot.storage import WeatherBotStorage
 from paperbot.trading_state import FileLock, TradingStateStore
 
+load_app_env(ROOT)
 
 def _resolve_path(value: str) -> Path:
     path = Path(value)
@@ -39,6 +36,7 @@ def _resolve_path(value: str) -> Path:
 def _build_history_rows(run_id: str, selected: list, plans: list, executions: list, generated_at: str) -> list[dict]:
     rows: list[dict] = []
     for rank, (opportunity, plan, execution) in enumerate(zip(selected, plans, executions), start=1):
+        sanitized_execution = _sanitize_execution_for_export(execution.as_dict())
         rows.append(
             {
                 "run_id": run_id,
@@ -46,10 +44,106 @@ def _build_history_rows(run_id: str, selected: list, plans: list, executions: li
                 "rank": rank,
                 **opportunity.as_dict(),
                 **{f"plan_{k}": v for k, v in asdict(plan).items()},
-                **{f"exec_{k}": v for k, v in execution.as_dict().items()},
+                **{f"exec_{k}": v for k, v in sanitized_execution.items()},
             }
         )
     return rows
+
+
+def _sanitize_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for env_key in (
+        "POLYMARKET_PRIVATE_KEY",
+        "POLYMARKET_API_KEY",
+        "POLYMARKET_API_SECRET",
+        "POLYMARKET_API_PASSPHRASE",
+        "POLYMARKET_FUNDER",
+    ):
+        secret = os.getenv(env_key, "").strip()
+        if secret:
+            text = text.replace(secret, f"<redacted:{env_key.lower()}>")
+    return text[:240]
+
+
+def _sanitize_identifier(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= 8:
+        return "***"
+    return f"{text[:4]}...{text[-4:]}"
+
+
+def _sanitize_execution_for_export(item: dict) -> dict:
+    sanitized = dict(item)
+    sanitized["response"] = {}
+    sanitized["fills"] = []
+    sanitized["has_response"] = bool(item.get("response"))
+    sanitized["fills_count"] = len(item.get("fills") or [])
+    sanitized["client_order_id"] = _sanitize_identifier(item.get("client_order_id"))
+    sanitized["exchange_order_id"] = _sanitize_identifier(item.get("exchange_order_id"))
+    sanitized["nonce"] = None
+    sanitized["submission_fingerprint"] = None
+    sanitized["error"] = _sanitize_text(item.get("error"))
+    return sanitized
+
+
+def _build_export_payload(
+    *,
+    generated_at: str,
+    run_id: str,
+    filters: dict,
+    raw_count: int,
+    selected: list,
+    blocked_opportunities: list[dict],
+    rejection_summary: dict,
+    plans: list,
+    executions: list,
+    execute_count: int,
+) -> dict:
+    return {
+        "generated_at": generated_at,
+        "run_id": run_id,
+        "filters": {**filters, "execute_top": execute_count},
+        "raw_count": raw_count,
+        "count": len(selected),
+        "filter_rejections": rejection_summary,
+        "blocked_opportunities": blocked_opportunities,
+        "opportunities": [item.as_dict() for item in selected],
+        "order_plans": [plan.as_dict() for plan in plans],
+        "executions": [_sanitize_execution_for_export(item.as_dict()) for item in executions],
+    }
+
+
+def _build_safe_share_payload(payload: dict) -> dict:
+    safe_payload = dict(payload)
+    safe_payload["opportunities"] = [
+        {
+            key: value
+            for key, value in item.items()
+            if key not in {"token_id", "market_id", "polymarket_url", "model_predictions"}
+        }
+        for item in payload.get("opportunities", [])
+    ]
+    safe_payload["blocked_opportunities"] = [
+        {
+            key: value
+            for key, value in item.items()
+            if key not in {"token_id", "market_id", "polymarket_url", "model_predictions"}
+        }
+        for item in payload.get("blocked_opportunities", [])
+    ]
+    safe_payload["order_plans"] = [
+        {
+            key: value
+            for key, value in item.items()
+            if key not in {"token_id", "polymarket_url", "bankroll_usd"}
+        }
+        for item in payload.get("order_plans", [])
+    ]
+    return safe_payload
 
 
 def _count_ambiguous_live_orders(storage: WeatherBotStorage) -> int:
@@ -108,6 +202,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--no-sync-resolutions", action="store_true", help="Do not refresh open positions against resolved market outcomes.")
     parser.add_argument("--export-json", default=None)
     parser.add_argument("--export-csv", default=None)
+    parser.add_argument("--safe-share", action="store_true", help="Redact market URLs, token ids and operational fields from stdout/JSON exports.")
     args = parser.parse_args(argv)
 
     if args.live and args.no_history:
@@ -148,9 +243,9 @@ def main(argv: list[str] | None = None) -> None:
         if not live_sync_result.get("ok"):
             message = f"live pre-sync failed: {live_sync_result.get('error') or 'unknown_error'}"
             if args.json:
-                print(json.dumps({"ok": False, "error": message, "live_sync": live_sync_result}, indent=2))
+                print(json.dumps({"ok": False, "error": _sanitize_text(message)}, indent=2))
                 return
-            print(message)
+            print(_sanitize_text(message))
             return
     try:
         scan_lock = FileLock(scan_lock_path, timeout_seconds=1.0, poll_seconds=0.1, stale_seconds=180.0)
@@ -295,25 +390,26 @@ def main(argv: list[str] | None = None) -> None:
     except TimeoutError:
         message = f"scan skipped: another scan is already running ({scan_lock_path})"
         if args.json:
-            print(json.dumps({"ok": False, "error": message}, indent=2))
+            print(json.dumps({"ok": False, "error": _sanitize_text(message)}, indent=2))
             return
-        print(message)
+        print(_sanitize_text(message))
         return
-    payload = {
-        "generated_at": generated_at,
-        "run_id": run_id,
-        "filters": {**base_filters, "execute_top": execute_count},
-        "raw_count": len(raw_opportunities),
-        "count": len(selected),
-        "filter_rejections": rejection_summary,
-        "blocked_opportunities": blocked_opportunities,
-        "opportunities": [item.as_dict() for item in selected],
-        "order_plans": [plan.as_dict() for plan in plans],
-        "executions": [item.as_dict() for item in executions],
-    }
+    payload = _build_export_payload(
+        generated_at=generated_at,
+        run_id=run_id,
+        filters=base_filters,
+        raw_count=len(raw_opportunities),
+        selected=selected,
+        blocked_opportunities=blocked_opportunities,
+        rejection_summary=rejection_summary,
+        plans=plans,
+        executions=executions,
+        execute_count=execute_count,
+    )
 
+    export_payload = _build_safe_share_payload(payload) if args.safe_share else payload
     if args.export_json:
-        write_json(_resolve_path(args.export_json), payload)
+        write_json(_resolve_path(args.export_json), export_payload)
     if args.export_csv:
         append_csv_rows(_resolve_path(args.export_csv), _build_history_rows(run_id, selected, plans, executions, generated_at))
     if not args.no_history:
@@ -347,11 +443,11 @@ def main(argv: list[str] | None = None) -> None:
             payload["prediction_resolution_sync"] = prediction_sync_summary
 
     if args.json:
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(export_payload, indent=2))
         return
 
     if live_sync_error:
-        print(f"AVISO: post-sync live falhou: {live_sync_error}")
+        print(f"AVISO: post-sync live falhou: {_sanitize_text(live_sync_error)}")
 
     if not selected:
         print("Nenhuma oportunidade encontrada com os filtros atuais.")
@@ -376,19 +472,16 @@ def main(argv: list[str] | None = None) -> None:
 
     print(f"Oportunidades encontradas: {len(selected)} de {len(raw_opportunities)} apos filtros")
     for idx, (opportunity, plan, execution) in enumerate(zip(selected, plans, executions), start=1):
-        models_text = ", ".join(f"{k}:{v:.1f}" for k, v in sorted(opportunity.model_predictions.items()))
         print(
             f"{idx:02d}. {opportunity.city_key} {opportunity.date_str} {opportunity.side} {opportunity.bucket} "
             f"edge={opportunity.edge:.2f} model={opportunity.model_prob:.2f}% price={opportunity.price_cents:.2f}c "
             f"ensemble={opportunity.ensemble_prediction:.1f}F consensus={opportunity.consensus_score:.2f}"
         )
         print(f"    {summarize_plan(plan)}")
-        print(f"    models: {models_text}")
         print(
             f"    execution: {execution.mode} success={execution.success}"
-            + (f" error={execution.error}" if execution.error else "")
+            + (f" error={_sanitize_text(execution.error)}" if execution.error else "")
         )
-        print(f"    {plan.polymarket_url}")
     if blocked_opportunities:
         print("Bloqueadas pelos filtros:")
         for item in blocked_opportunities:

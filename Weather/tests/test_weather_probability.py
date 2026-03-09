@@ -9,7 +9,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from paperbot.polymarket_weather import _ensemble_bucket_probability, _signal_tier
+from paperbot.polymarket_weather import _agreeing_model_names, _ensemble_bucket_probability, _signal_tier
 from paperbot.weather_models import EnsembleForecast
 
 
@@ -69,6 +69,20 @@ class WeatherProbabilityTests(unittest.TestCase):
         )
         self.assertEqual(weak_tier, "C")
         self.assertEqual(weak_decision, "watch")
+
+    def test_agreeing_model_names_tracks_consensus_side(self) -> None:
+        names = _agreeing_model_names(
+            {
+                "ecmwf": 70.0,
+                "gfs": 71.0,
+                "icon": 68.0,
+                "nws": 74.0,
+            },
+            low=69.5,
+            high=71.5,
+            side="YES",
+        )
+        self.assertEqual(names, ["ecmwf", "gfs"])
 
 
 if __name__ == "__main__":
