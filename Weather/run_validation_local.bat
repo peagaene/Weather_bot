@@ -1,0 +1,9 @@
+@echo off
+cd /d %~dp0
+
+start "Weather Dashboard" cmd /k "cd /d %~dp0 && python -m streamlit run dashboard.py --server.address 127.0.0.1"
+
+timeout /t 2 /nobreak >nul
+start "" http://localhost:8501
+
+start "Weather Micro Live" cmd /k "cd /d %~dp0 && call run_micro_live_safe.bat"

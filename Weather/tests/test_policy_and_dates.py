@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from paperbot.degendoppler import CITY_CONFIGS
+from paperbot.policy import apply_trade_policy, parse_bucket_bounds
+from paperbot.polymarket_weather import _local_target_dates
+
+
+class PolicyAndDatesTests(unittest.TestCase):
+    def test_parse_bucket_bounds_standard_degree_labels(self) -> None:
+        self.assertEqual(parse_bucket_bounds("84-85°F"), (84.0, 85.0))
+        self.assertEqual(parse_bucket_bounds("46°F or higher"), (46.0, None))
+        self.assertEqual(parse_bucket_bounds("45°F or below"), (None, 45.0))
+
+    def test_local_target_dates_use_city_timezone(self) -> None:
+        reference = datetime(2026, 3, 9, 1, 30, tzinfo=timezone.utc)
+        sea = next(city for city in CITY_CONFIGS if city.key == "SEA")
+        mia = next(city for city in CITY_CONFIGS if city.key == "MIA")
+
+        sea_dates = _local_target_dates(sea, reference, 2)
+        mia_dates = _local_target_dates(mia, reference, 2)
+
+        self.assertEqual(sea_dates[0].date().isoformat(), "2026-03-08")
+        self.assertEqual(mia_dates[0].date().isoformat(), "2026-03-08")
+        self.assertEqual(sea_dates[1].date().isoformat(), "2026-03-09")
+        self.assertEqual(mia_dates[1].date().isoformat(), "2026-03-09")
+
+    def test_policy_requires_actionable_signal_tier_and_worst_case_edge(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "bucket": "84-85Â°F",
+                "consensus_score": 0.8,
+                "spread": 1.2,
+                "sigma": 1.8,
+                "ensemble_prediction": 84.2,
+                "confidence_tier": "safe",
+                "signal_tier": "B",
+                "edge": 24.0,
+                "min_agreeing_model_edge": 14.0,
+                "price_cents": 28.0,
+                "coverage_ok": True,
+                "degraded_reason": None,
+                "executable_quality_score": 0.9,
+                "data_quality_score": 0.9,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "signal_tier_not_actionable")
+
+
+if __name__ == "__main__":
+    unittest.main()

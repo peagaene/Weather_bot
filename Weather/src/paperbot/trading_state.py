@@ -29,11 +29,69 @@ class PolicyDecision:
 
 
 class FileLock:
-    def __init__(self, path: Path, *, timeout_seconds: float = 30.0, poll_seconds: float = 0.2) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        timeout_seconds: float = 30.0,
+        poll_seconds: float = 0.2,
+        stale_seconds: float | None = None,
+    ) -> None:
         self.path = path
         self.timeout_seconds = timeout_seconds
         self.poll_seconds = poll_seconds
+        self.stale_seconds = stale_seconds if stale_seconds is not None else max(timeout_seconds * 4.0, 120.0)
         self._fd: int | None = None
+
+    def _lock_payload(self) -> dict[str, Any]:
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except Exception:
+            return {}
+        payload: dict[str, Any] = {}
+        for part in raw.split():
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            payload[key] = value
+        return payload
+
+    def _pid_is_alive(self, pid_value: Any) -> bool:
+        try:
+            pid = int(pid_value)
+        except (TypeError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except Exception:
+            return False
+        return True
+
+    def _clear_stale_lock_if_needed(self) -> bool:
+        payload = self._lock_payload()
+        ts = _parse_ts(str(payload.get("ts") or ""))
+        pid_alive = self._pid_is_alive(payload.get("pid"))
+        if not pid_alive:
+            try:
+                self.path.unlink(missing_ok=True)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _write_payload(self) -> None:
+        payload = f"pid={os.getpid()} ts={_utcnow().isoformat()}".encode("utf-8")
+        try:
+            os.lseek(self._fd, 0, os.SEEK_SET)
+            os.ftruncate(self._fd, 0)
+            os.write(self._fd, payload)
+            os.fsync(self._fd)
+        except Exception as exc:
+            raise RuntimeError(f"failed to write lock payload for {self.path}") from exc
 
     def __enter__(self) -> "FileLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,10 +99,20 @@ class FileLock:
         while True:
             try:
                 self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-                payload = f"pid={os.getpid()} ts={_utcnow().isoformat()}".encode("utf-8")
-                os.write(self._fd, payload)
-                return self
+                try:
+                    self._write_payload()
+                    return self
+                except Exception:
+                    if self._fd is not None:
+                        os.close(self._fd)
+                        self._fd = None
+                    try:
+                        self.path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    raise
             except FileExistsError:
+                self._clear_stale_lock_if_needed()
                 if time.time() >= deadline:
                     raise TimeoutError(f"timeout acquiring lock {self.path}")
                 time.sleep(self.poll_seconds)
@@ -68,6 +136,7 @@ class TradingStateStore:
         return {
             "day": _utcnow().date().isoformat(),
             "daily_live_orders": 0,
+            "daily_bucket_live_orders": {},
             "last_city_trade": {},
             "last_event_trade": {},
             "last_bucket_trade": {},
@@ -91,6 +160,7 @@ class TradingStateStore:
         if self.data.get("day") != today:
             self.data["day"] = today
             self.data["daily_live_orders"] = 0
+            self.data["daily_bucket_live_orders"] = {}
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,6 +173,7 @@ class TradingStateStore:
         event_slug: str,
         bucket_key: str,
         daily_live_limit: int,
+        bucket_live_limit: int,
         city_cooldown_minutes: int,
         event_cooldown_minutes: int,
         bucket_cooldown_minutes: int,
@@ -110,6 +181,10 @@ class TradingStateStore:
         self._roll_day_if_needed()
         if daily_live_limit > 0 and int(self.data.get("daily_live_orders", 0)) >= daily_live_limit:
             return PolicyDecision(False, "daily_live_limit_reached")
+        bucket_counts = self.data.get("daily_bucket_live_orders", {})
+        bucket_total = int(bucket_counts.get(bucket_key, 0))
+        if bucket_live_limit > 0 and bucket_total >= bucket_live_limit:
+            return PolicyDecision(False, "bucket_live_limit_reached")
 
         now = _utcnow()
         checks = [
@@ -130,6 +205,8 @@ class TradingStateStore:
     def record_live_execution(self, *, city_key: str, event_slug: str, bucket_key: str) -> None:
         self._roll_day_if_needed()
         self.data["daily_live_orders"] = int(self.data.get("daily_live_orders", 0)) + 1
+        bucket_counts = self.data.setdefault("daily_bucket_live_orders", {})
+        bucket_counts[bucket_key] = int(bucket_counts.get(bucket_key, 0)) + 1
         now = _utcnow().isoformat()
         self.data.setdefault("last_city_trade", {})[city_key] = now
         self.data.setdefault("last_event_trade", {})[event_slug] = now

@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+import sys
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from paperbot.degendoppler import CITY_CONFIGS
+from paperbot.weather_models import ModelForecast, build_ensemble_for_date
+
+
+class WeatherModelsEnsembleTests(unittest.TestCase):
+    def test_robust_blend_stays_close_when_models_agree(self) -> None:
+        city = CITY_CONFIGS[0]
+        forecasts = {
+            "best_match": [ModelForecast("best_match", "2026-03-08", 71.0)],
+            "ecmwf": [ModelForecast("ecmwf", "2026-03-08", 72.0)],
+            "gfs": [ModelForecast("gfs", "2026-03-08", 71.5)],
+            "icon": [ModelForecast("icon", "2026-03-08", 72.5)],
+            "nws": [ModelForecast("nws", "2026-03-08", 72.0)],
+        }
+
+        ensemble = build_ensemble_for_date(city, forecasts, "2026-03-08")
+
+        self.assertIsNotNone(ensemble)
+        assert ensemble is not None
+        self.assertGreaterEqual(ensemble.blended_high, 71.3)
+        self.assertLessEqual(ensemble.blended_high, 72.3)
+        self.assertLessEqual(ensemble.sigma, 2.0)
+
+    def test_robust_blend_downweights_single_outlier(self) -> None:
+        city = CITY_CONFIGS[0]
+        forecasts = {
+            "best_match": [ModelForecast("best_match", "2026-03-08", 71.0)],
+            "ecmwf": [ModelForecast("ecmwf", "2026-03-08", 72.0)],
+            "gfs": [ModelForecast("gfs", "2026-03-08", 71.5)],
+            "icon": [ModelForecast("icon", "2026-03-08", 72.5)],
+            "nws": [ModelForecast("nws", "2026-03-08", 72.0)],
+            "openweather": [ModelForecast("openweather", "2026-03-08", 86.0)],
+        }
+
+        ensemble = build_ensemble_for_date(city, forecasts, "2026-03-08")
+
+        self.assertIsNotNone(ensemble)
+        assert ensemble is not None
+        self.assertLess(ensemble.blended_high, 75.0)
+        self.assertGreaterEqual(ensemble.sigma, 1.5)
+        self.assertLess(ensemble.consensus_score, 0.9)
+
+    def test_city_horizon_calibration_applies_bias_and_weight_multiplier(self) -> None:
+        city = CITY_CONFIGS[0]
+        forecasts = {
+            "best_match": [ModelForecast("best_match", "2026-03-08", 72.0)],
+            "gfs": [ModelForecast("gfs", "2026-03-08", 76.0)],
+            "ecmwf": [ModelForecast("ecmwf", "2026-03-08", 73.0)],
+        }
+
+        with patch(
+            "paperbot.weather_models._resolve_calibration",
+            return_value=({"gfs": -3.0, "best_match": 0.5}, {"ecmwf": 1.5, "gfs": 0.5}),
+        ):
+            ensemble = build_ensemble_for_date(city, forecasts, "2026-03-08", horizon_days=1)
+
+        self.assertIsNotNone(ensemble)
+        assert ensemble is not None
+        self.assertEqual(ensemble.predictions["gfs"], 73.0)
+        self.assertEqual(ensemble.predictions["best_match"], 72.5)
+        self.assertGreaterEqual(ensemble.blended_high, 72.5)
+        self.assertLessEqual(ensemble.blended_high, 73.5)
+
+    def test_short_horizon_weights_favor_near_term_sources(self) -> None:
+        city = CITY_CONFIGS[0]
+        forecasts = {
+            "nws": [ModelForecast("nws", "2026-03-08", 78.0)],
+            "best_match": [ModelForecast("best_match", "2026-03-08", 77.0)],
+            "ecmwf": [ModelForecast("ecmwf", "2026-03-08", 70.0)],
+            "gfs": [ModelForecast("gfs", "2026-03-08", 69.0)],
+        }
+
+        today = build_ensemble_for_date(city, forecasts, "2026-03-08", horizon_days=0)
+        later = build_ensemble_for_date(city, forecasts, "2026-03-08", horizon_days=2)
+
+        self.assertIsNotNone(today)
+        self.assertIsNotNone(later)
+        assert today is not None
+        assert later is not None
+        self.assertGreater(today.blended_high, later.blended_high)
+        self.assertGreater(today.effective_weights["nws"], later.effective_weights["nws"])
+        self.assertLess(today.effective_weights["gfs"], later.effective_weights["gfs"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -22,6 +22,24 @@ env/
 .env.*
 !.env.example
 !.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.der
+*.crt
+*.cer
+*.jks
+*.keystore
+*.seed
+*.mnemonic
+*private_key*
+*secret*
+*wallet*
+*keystore*
+secrets/
+keys/
+wallets/
 
 # IDE / OS noise
 .DS_Store
@@ -41,3 +59,4 @@ Cripto/src/**/__pycache__/
 Cripto/*.log
 Cripto/*.json
 !Cripto/.env.example
+!Cripto/SECURITY.md

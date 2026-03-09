@@ -118,12 +118,45 @@ Por padrão cada execução salva:
 
 - CSV append-only: `export/history/weather_model_scan_log.csv`
 - último snapshot JSON: `export/history/weather_model_latest.json`
+- banco principal SQLite: `export/db/weather_bot.db`
 
 Você pode desativar isso com:
 
 ```bash
 python run_weather_models.py --no-history
 ```
+
+### Dashboard
+
+O painel operacional agora lê do banco SQLite e pode ser aberto com:
+
+```bash
+streamlit run dashboard.py
+```
+
+Para abrir como app local no Windows:
+
+```bat
+run_dashboard.bat
+```
+
+Ou, para abrir o dashboard e o modo de validacao local micro-live ao mesmo tempo:
+
+```bat
+run_validation_local.bat
+```
+
+O dashboard mostra:
+
+- runs gravados
+- oportunidades por run
+- planos de ordem
+- execuções recentes
+- resumo por cidade
+- posições abertas e resolvidas
+- PnL realizado e taxa de acerto
+
+Você também pode rodar um novo scan sem fechar o painel usando o bloco `Novo scan` na sidebar do dashboard.
 
 ### Dry-run e live
 
@@ -143,6 +176,55 @@ Para o modo `live`, preencha no `.env`:
 - `POLYMARKET_API_PASSPHRASE`
 
 Se as credenciais de API não estiverem preenchidas, o cliente tenta derivá-las automaticamente a partir da chave privada.
+
+### Auto trade seguro
+
+Para automação contínua com travas conservadoras, use:
+
+```bash
+python run_auto_trade.py
+```
+
+Isso roda em `dry-run` por padrão.
+
+Para habilitar envio real de ordens:
+
+1. configure no `.env`:
+   - `WEATHER_AUTO_TRADE_ENABLED=1`
+   - `PAPERBOT_MAX_STAKE_USD` pequeno, por exemplo `1`
+   - `WEATHER_DAILY_LIVE_LIMIT=1`
+   - `WEATHER_MAX_ORDERS_PER_EVENT=1`
+2. rode:
+
+```bash
+python run_auto_trade.py --live
+```
+
+Ou no Windows:
+
+```bat
+run_auto_trade.bat
+```
+
+Para a fase atual de validacao local com stake simbolico, use:
+
+```bat
+run_micro_live_safe.bat
+```
+
+Ou, para subir dashboard + micro-live local juntos:
+
+```bat
+run_validation_local.bat
+```
+
+Proteções do modo seguro:
+
+- bloqueia `execute_top != 1`
+- bloqueia `max stake > US$2`
+- exige `WEATHER_MAX_ORDERS_PER_EVENT = 1`
+- exige `WEATHER_AUTO_TRADE_ENABLED=1` para modo `live`
+- usa lock próprio para evitar dois auto-traders ao mesmo tempo
 
 ### Proteções operacionais
 

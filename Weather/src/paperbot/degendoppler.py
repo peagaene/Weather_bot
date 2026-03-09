@@ -8,6 +8,7 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 DEGENDOPPLER_BASE_URL = "https://degendoppler.com"
@@ -36,15 +37,16 @@ class CityConfig:
     market_city: str
     lat: float
     lon: float
+    timezone_name: str
 
 
 CITY_CONFIGS: tuple[CityConfig, ...] = (
-    CityConfig("NYC", "New York City", "nyc", 40.76, -73.86),
-    CityConfig("CHI", "Chicago", "chicago", 41.98, -87.91),
-    CityConfig("ATL", "Atlanta", "atlanta", 33.64, -84.41),
-    CityConfig("SEA", "Seattle", "seattle", 47.44, -122.30),
-    CityConfig("MIA", "Miami", "miami", 25.85, -80.24),
-    CityConfig("DAL", "Dallas", "dallas", 32.85, -96.87),
+    CityConfig("NYC", "New York City", "nyc", 40.76, -73.86, "America/New_York"),
+    CityConfig("CHI", "Chicago", "chicago", 41.98, -87.91, "America/Chicago"),
+    CityConfig("ATL", "Atlanta", "atlanta", 33.64, -84.41, "America/New_York"),
+    CityConfig("SEA", "Seattle", "seattle", 47.44, -122.30, "America/Los_Angeles"),
+    CityConfig("MIA", "Miami", "miami", 25.85, -80.24, "America/New_York"),
+    CityConfig("DAL", "Dallas", "dallas", 32.85, -96.87, "America/Chicago"),
 )
 
 
@@ -71,6 +73,12 @@ class MarketBucket:
     best_ask: float | None
     last_trade_price: float | None
     order_min_size: float | None
+    yes_best_ask_cents: float | None = None
+    no_best_ask_cents: float | None = None
+    yes_best_bid_cents: float | None = None
+    no_best_bid_cents: float | None = None
+    yes_last_trade_cents: float | None = None
+    no_last_trade_cents: float | None = None
 
 
 @dataclass
@@ -448,8 +456,9 @@ def scan_degendoppler_opportunities(
         forecasts = _parse_open_meteo_forecast(city)
         if not forecasts:
             continue
+        city_now = reference.astimezone(ZoneInfo(city.timezone_name))
         for day_offset, day_label in enumerate(day_labels):
-            target_date = reference + timedelta(days=day_offset)
+            target_date = city_now + timedelta(days=day_offset)
             scan = _parse_market_scan(city, target_date)
             if scan is None:
                 continue
