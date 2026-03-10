@@ -296,6 +296,35 @@ class WeatherBotStorage:
 
                 CREATE INDEX IF NOT EXISTS idx_live_account_snapshots_captured_at
                 ON live_account_snapshots(captured_at);
+
+                CREATE TABLE IF NOT EXISTS market_history_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    captured_at TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'gamma_clob',
+                    city_key TEXT,
+                    date_str TEXT,
+                    event_slug TEXT NOT NULL,
+                    event_title TEXT,
+                    market_slug TEXT NOT NULL,
+                    market_id TEXT,
+                    bucket TEXT,
+                    token_id_yes TEXT,
+                    token_id_no TEXT,
+                    yes_price_cents REAL,
+                    no_price_cents REAL,
+                    yes_best_ask_cents REAL,
+                    no_best_ask_cents REAL,
+                    yes_best_bid_cents REAL,
+                    no_best_bid_cents REAL,
+                    last_trade_price REAL,
+                    order_min_size REAL,
+                    raw_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_market_history_snapshots_market
+                ON market_history_snapshots(market_slug, captured_at);
+                CREATE INDEX IF NOT EXISTS idx_market_history_snapshots_event
+                ON market_history_snapshots(event_slug, captured_at);
                 """
             )
             self._ensure_opportunities_columns(conn)
@@ -1455,3 +1484,97 @@ class WeatherBotStorage:
                 (limit,),
             ).fetchall()
         return [_row_to_dict(row) for row in rows]
+
+    def list_recent_market_targets(
+        self,
+        *,
+        limit: int = 100,
+        lookback_days: int = 7,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                WITH recent AS (
+                    SELECT
+                        city_key,
+                        date_str,
+                        event_slug,
+                        MAX(generated_at) AS latest_generated_at
+                    FROM scan_predictions
+                    WHERE generated_at >= datetime('now', ?)
+                    GROUP BY city_key, date_str, event_slug
+                )
+                SELECT city_key, date_str, event_slug, latest_generated_at
+                FROM recent
+                ORDER BY latest_generated_at DESC
+                LIMIT ?
+                """,
+                (f"-{max(1, int(lookback_days))} days", limit),
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    def record_market_history_snapshots(
+        self,
+        snapshots: list[dict[str, Any]],
+    ) -> int:
+        if not snapshots:
+            return 0
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO market_history_snapshots (
+                    captured_at, source, city_key, date_str, event_slug, event_title, market_slug, market_id,
+                    bucket, token_id_yes, token_id_no, yes_price_cents, no_price_cents, yes_best_ask_cents,
+                    no_best_ask_cents, yes_best_bid_cents, no_best_bid_cents, last_trade_price, order_min_size, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.get("captured_at"),
+                        item.get("source") or "gamma_clob",
+                        item.get("city_key"),
+                        item.get("date_str"),
+                        item.get("event_slug"),
+                        item.get("event_title"),
+                        item.get("market_slug"),
+                        item.get("market_id"),
+                        item.get("bucket"),
+                        item.get("token_id_yes"),
+                        item.get("token_id_no"),
+                        item.get("yes_price_cents"),
+                        item.get("no_price_cents"),
+                        item.get("yes_best_ask_cents"),
+                        item.get("no_best_ask_cents"),
+                        item.get("yes_best_bid_cents"),
+                        item.get("no_best_bid_cents"),
+                        item.get("last_trade_price"),
+                        item.get("order_min_size"),
+                        _json_dumps(item.get("raw_json") or {}),
+                    )
+                    for item in snapshots
+                ],
+            )
+        return len(snapshots)
+
+    def list_market_history_snapshots(
+        self,
+        *,
+        market_slug: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT *
+            FROM market_history_snapshots
+        """
+        params: list[Any] = []
+        if market_slug:
+            query += " WHERE market_slug = ?"
+            params.append(market_slug)
+        query += " ORDER BY captured_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        output = [_row_to_dict(row) for row in rows]
+        for item in output:
+            item["raw_json"] = json.loads(item.get("raw_json") or "{}")
+        return output
