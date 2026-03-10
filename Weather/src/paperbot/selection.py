@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from .policy import apply_trade_policy
+from .policy import apply_trade_policy, effective_price_bounds
 
 
 def _evaluate_opportunity(
@@ -29,9 +29,17 @@ def _evaluate_opportunity(
     if require_token and not getattr(opportunity, "token_id", None):
         return False, "missing_token"
     price = float(getattr(opportunity, "price_cents", 0.0))
-    if min_price_cents is not None and price < min_price_cents:
+    effective_min_price = min_price_cents
+    effective_max_price = max_price_cents
+    if min_price_cents is not None and max_price_cents is not None:
+        effective_min_price, effective_max_price = effective_price_bounds(
+            opportunity,
+            min_price_cents=min_price_cents,
+            max_price_cents=max_price_cents,
+        )
+    if effective_min_price is not None and price < effective_min_price:
         return False, "price_below_min"
-    if max_price_cents is not None and price > max_price_cents:
+    if effective_max_price is not None and price > effective_max_price:
         return False, "price_above_max"
     if max_spread is not None and float(getattr(opportunity, "spread", 0.0)) > max_spread:
         return False, "spread_above_max"

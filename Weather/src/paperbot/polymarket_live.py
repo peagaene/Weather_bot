@@ -104,6 +104,16 @@ def _round_to_tick(value_cents: float, tick_size_cents: float | None) -> float:
     return round(max(tick_size_cents, steps * tick_size_cents), 4)
 
 
+def _required_stake_for_order_min_size(
+    *,
+    order_min_size: float | None,
+    limit_price_cents: float,
+) -> float | None:
+    if order_min_size is None or order_min_size <= 0 or limit_price_cents <= 0:
+        return None
+    return float(order_min_size) * float(limit_price_cents) / 100.0
+
+
 def build_order_plan(
     opportunity: Any,
     *,
@@ -121,8 +131,23 @@ def build_order_plan(
     limit_price = max(0.1, min(99.9, limit_price))
     tick_size_cents = _fetch_tick_size_cents(getattr(opportunity, "token_id", None))
     limit_price = _round_to_tick(limit_price, tick_size_cents)
-    share_size = (stake_usd / (limit_price / 100.0)) if stake_usd > 0 and limit_price > 0 else 0.0
     order_min_size = getattr(opportunity, "order_min_size", None)
+    required_stake_usd = _required_stake_for_order_min_size(
+        order_min_size=(
+            float(order_min_size)
+            if order_min_size is not None
+            else None
+        ),
+        limit_price_cents=limit_price,
+    )
+    if required_stake_usd is not None and stake_usd > 0 and stake_usd + 1e-9 < required_stake_usd:
+        if max_stake_usd is not None and max_stake_usd > 0 and required_stake_usd > max_stake_usd + 1e-9:
+            stake_usd = min(stake_usd, max_stake_usd)
+        else:
+            stake_usd = max(stake_usd, required_stake_usd)
+            if max_stake_usd is not None and max_stake_usd > 0:
+                stake_usd = min(stake_usd, max_stake_usd)
+    share_size = (stake_usd / (limit_price / 100.0)) if stake_usd > 0 and limit_price > 0 else 0.0
     valid = True
     invalid_reason = None
     if getattr(opportunity, "token_id", None) is None:
@@ -136,7 +161,10 @@ def build_order_plan(
         invalid_reason = "missing_tick_size"
     elif order_min_size is not None and share_size < float(order_min_size):
         valid = False
-        invalid_reason = "share_size_below_order_min_size"
+        if required_stake_usd is not None and max_stake_usd is not None and max_stake_usd > 0 and required_stake_usd > max_stake_usd + 1e-9:
+            invalid_reason = "stake_cap_below_order_min_size"
+        else:
+            invalid_reason = "share_size_below_order_min_size"
     return OrderPlan(
         event_slug=opportunity.event_slug,
         market_slug=opportunity.market_slug,

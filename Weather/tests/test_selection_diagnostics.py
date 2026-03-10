@@ -117,6 +117,38 @@ class SelectionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertIs(selected[0], viable)
 
+    def test_filter_opportunities_applies_tomorrow_price_override(self) -> None:
+        opportunity = SimpleNamespace(
+            event_slug="sea-event",
+            market_slug="sea-market",
+            side="NO",
+            token_id="token-a",
+            price_cents=59.0,
+            spread=1.0,
+            weighted_score=90.0,
+            edge=20.0,
+            day_label="tomorrow",
+            confidence_tier="near-safe",
+            signal_tier="B",
+        )
+        policy = SimpleNamespace(allowed=True, reason="allowed", risk_label="Safe", risk_score=0.1)
+
+        with patch("paperbot.selection.apply_trade_policy", return_value=policy):
+            with patch.dict("os.environ", {"WEATHER_POLICY_TOMORROW_MAX_PRICE_CENTS": "60"}, clear=False):
+                selected = filter_opportunities(
+                    [opportunity],
+                    min_price_cents=10.0,
+                    max_price_cents=55.0,
+                    max_spread=4.0,
+                    max_share_size=None,
+                    require_token=True,
+                    max_orders_per_event=1,
+                    plans_by_slug=None,
+                )
+
+        self.assertEqual(len(selected), 1)
+        self.assertIs(selected[0], opportunity)
+
 
 if __name__ == "__main__":
     unittest.main()

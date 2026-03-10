@@ -13,7 +13,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from paperbot.degendoppler import CITY_CONFIGS
-from paperbot.policy import _load_policy_profile, apply_trade_policy, parse_bucket_bounds
+from paperbot.policy import _load_policy_profile, apply_trade_policy, effective_price_bounds, parse_bucket_bounds
 from paperbot.polymarket_weather import _local_target_dates
 
 
@@ -208,6 +208,88 @@ class PolicyAndDatesTests(unittest.TestCase):
             decision = apply_trade_policy(opportunity)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "historical_segment_edge_too_low")
+
+    def test_policy_allows_tomorrow_b_tier_risky_label_when_consensus_is_exceptional(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "SEA",
+                "day_label": "tomorrow",
+                "bucket": "52-53°F",
+                "consensus_score": 0.84,
+                "spread": 2.4,
+                "sigma": 3.8,
+                "ensemble_prediction": 52.2,
+                "confidence_tier": "safe",
+                "signal_tier": "B",
+                "edge": 27.0,
+                "min_agreeing_model_edge": 14.0,
+                "price_cents": 34.0,
+                "coverage_ok": True,
+                "coverage_score": 0.83,
+                "agreement_models": 10,
+                "total_models": 12,
+                "agreement_pct": 83.33,
+                "degraded_reason": None,
+                "executable_quality_score": 0.84,
+                "data_quality_score": 0.86,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
+        self.assertEqual(decision.risk_label, "Risky")
+
+    def test_policy_keeps_c_tier_blocked_even_with_tomorrow_risky_override_shape(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "SEA",
+                "day_label": "tomorrow",
+                "bucket": "52-53°F",
+                "consensus_score": 0.84,
+                "spread": 2.4,
+                "sigma": 3.8,
+                "ensemble_prediction": 52.2,
+                "confidence_tier": "safe",
+                "signal_tier": "C",
+                "edge": 27.0,
+                "min_agreeing_model_edge": 14.0,
+                "price_cents": 34.0,
+                "coverage_ok": True,
+                "coverage_score": 0.83,
+                "agreement_models": 10,
+                "total_models": 12,
+                "agreement_pct": 83.33,
+                "degraded_reason": None,
+                "executable_quality_score": 0.84,
+                "data_quality_score": 0.86,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "signal_tier_not_actionable")
+
+    def test_effective_price_bounds_allows_higher_tomorrow_cap_for_safe_b_tier(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "day_label": "tomorrow",
+                "confidence_tier": "near-safe",
+                "signal_tier": "B",
+            },
+        )()
+        with patch.dict("os.environ", {"WEATHER_POLICY_TOMORROW_MAX_PRICE_CENTS": "60"}, clear=False):
+            min_price, max_price = effective_price_bounds(
+                opportunity,
+                min_price_cents=10.0,
+                max_price_cents=55.0,
+            )
+        self.assertEqual(min_price, 10.0)
+        self.assertEqual(max_price, 60.0)
 
     def test_policy_uses_generated_profile_json(self) -> None:
         opportunity = type(

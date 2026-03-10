@@ -103,6 +103,36 @@ def _fetch_rows(db_path: Path) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
         conn.close()
 
 
+def _fetch_market_history_rows(
+    db_path: Path,
+    *,
+    lookback_hours: int,
+) -> list[sqlite3.Row]:
+    conn = _connect(db_path)
+    try:
+        query = """
+            SELECT
+                captured_at,
+                market_slug,
+                yes_price_cents,
+                no_price_cents,
+                yes_best_ask_cents,
+                no_best_ask_cents,
+                yes_best_bid_cents,
+                no_best_bid_cents,
+                last_trade_price
+            FROM market_history_snapshots
+        """
+        params: list[Any] = []
+        if lookback_hours > 0:
+            query += " WHERE captured_at >= datetime('now', ?)"
+            params.append(f"-{lookback_hours} hours")
+        query += " ORDER BY market_slug ASC, captured_at ASC, id ASC"
+        return conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+
 def _filter_recent_rows(
     rows: list[sqlite3.Row],
     *,
@@ -253,86 +283,6 @@ def _build_run_gap_summary(
         "current_session_largest_gap_seconds": round(max(session_large_gaps), 2) if session_large_gaps else None,
     }
 
-
-def _event_replay(rows: list[sqlite3.Row]) -> dict[str, Any]:
-    simulated_trades: list[dict[str, Any]] = []
-    skipped: dict[str, int] = defaultdict(int)
-    first_seen: dict[str, sqlite3.Row] = {}
-
-    for row in rows:
-        market_key = f"{row['event_slug']}|{row['market_slug']}|{row['side']}"
-        if market_key in first_seen:
-            skipped["duplicate_market_after_entry"] += 1
-            continue
-
-        if row["degraded_reason"] and not bool(row["policy_allowed"]):
-            skipped[f"degraded:{row['degraded_reason']}"] += 1
-            continue
-        if not bool(row["policy_allowed"]):
-            skipped[f"policy:{row['policy_reason'] or 'blocked'}"] += 1
-            continue
-        if str(row["price_source"] or "").lower() == "gamma_outcome_price":
-            skipped["non_executable_price_source"] += 1
-            continue
-
-        entry_price_cents = _safe_float(row["price_cents"])
-        settled_price_cents = _safe_float(row["settled_price_cents"])
-        generated_at = _parse_iso(row["generated_at"])
-        resolved_at = _parse_iso(row["resolved_at"])
-        if (
-            entry_price_cents is None
-            or entry_price_cents <= 0
-            or settled_price_cents is None
-            or generated_at is None
-        ):
-            skipped["invalid_row"] += 1
-            continue
-
-        stake_usd = 1.0
-        shares = round(stake_usd / (entry_price_cents / 100.0), 6)
-        payout_usd = round(shares * (settled_price_cents / 100.0), 6)
-        pnl_usd = round(payout_usd - stake_usd, 6)
-        roi_percent = round((pnl_usd / stake_usd) * 100.0, 4)
-        first_seen[market_key] = row
-        simulated_trades.append(
-            {
-                "market_key": market_key,
-                "generated_at": generated_at.isoformat(),
-                "resolved_at": resolved_at.isoformat() if resolved_at else None,
-                "city_key": row["city_key"],
-                "event_slug": row["event_slug"],
-                "market_slug": row["market_slug"],
-                "event_title": row["event_title"],
-                "bucket": row["bucket"],
-                "side": row["side"],
-                "entry_price_cents": round(entry_price_cents, 4),
-                "settled_price_cents": round(settled_price_cents, 4),
-                "stake_usd": stake_usd,
-                "shares": shares,
-                "payout_usd": payout_usd,
-                "pnl_usd": pnl_usd,
-                "roi_percent": roi_percent,
-                "confidence_tier": row["confidence_tier"],
-                "policy_reason": row["policy_reason"],
-            }
-        )
-
-    wins = sum(1 for trade in simulated_trades if trade["pnl_usd"] > 0)
-    losses = sum(1 for trade in simulated_trades if trade["pnl_usd"] < 0)
-    pnl_total = round(sum(trade["pnl_usd"] for trade in simulated_trades), 6)
-    return {
-        "trades": simulated_trades,
-        "simulated_trades": len(simulated_trades),
-        "wins": wins,
-        "losses": losses,
-        "win_rate_percent": round((wins / len(simulated_trades)) * 100.0, 4)
-        if simulated_trades
-        else None,
-        "pnl_usd": pnl_total,
-        "skipped": dict(sorted(skipped.items())),
-    }
-
-
 def _group_trade_summary(trades: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for trade in trades:
@@ -367,6 +317,198 @@ def _group_trade_summary(trades: list[dict[str, Any]], key: str) -> list[dict[st
     return output
 
 
+def _build_market_history_index(rows: list[sqlite3.Row]) -> dict[str, list[dict[str, Any]]]:
+    index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        captured_at = _parse_iso(row["captured_at"])
+        market_slug = str(row["market_slug"] or "").strip()
+        if not market_slug or captured_at is None:
+            continue
+        index[market_slug].append(
+            {
+                "captured_at": captured_at,
+                "yes_price_cents": _safe_float(row["yes_price_cents"]),
+                "no_price_cents": _safe_float(row["no_price_cents"]),
+                "yes_best_ask_cents": _safe_float(row["yes_best_ask_cents"]),
+                "no_best_ask_cents": _safe_float(row["no_best_ask_cents"]),
+                "yes_best_bid_cents": _safe_float(row["yes_best_bid_cents"]),
+                "no_best_bid_cents": _safe_float(row["no_best_bid_cents"]),
+                "last_trade_price": _safe_float(row["last_trade_price"]),
+            }
+        )
+    return index
+
+
+def _select_market_snapshot(
+    snapshots: list[dict[str, Any]],
+    *,
+    target_time: datetime | None,
+) -> dict[str, Any] | None:
+    if not snapshots:
+        return None
+    if target_time is None:
+        return snapshots[-1]
+    eligible = [item for item in snapshots if item["captured_at"] <= target_time]
+    if eligible:
+        return eligible[-1]
+    return min(
+        snapshots,
+        key=lambda item: abs((item["captured_at"] - target_time).total_seconds()),
+    )
+
+
+def _snapshot_side_fields(side: str, snapshot: dict[str, Any] | None) -> tuple[float | None, float | None, float | None]:
+    if snapshot is None:
+        return None, None, None
+    if str(side or "").upper() == "NO":
+        return (
+            _safe_float(snapshot.get("no_price_cents")),
+            _safe_float(snapshot.get("no_best_ask_cents")),
+            _safe_float(snapshot.get("no_best_bid_cents")),
+        )
+    return (
+        _safe_float(snapshot.get("yes_price_cents")),
+        _safe_float(snapshot.get("yes_best_ask_cents")),
+        _safe_float(snapshot.get("yes_best_bid_cents")),
+    )
+
+
+def _build_market_history_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    enriched = [trade for trade in trades if trade.get("market_history_used")]
+    if not enriched:
+        return {
+            "trades_with_market_history": 0,
+            "coverage_ratio": 0.0,
+            "avg_entry_delta_cents": None,
+            "avg_observed_spread_cents": None,
+        }
+    entry_deltas = [
+        abs(float(trade["entry_vs_snapshot_delta_cents"]))
+        for trade in enriched
+        if trade.get("entry_vs_snapshot_delta_cents") is not None
+    ]
+    spreads = [
+        float(trade["observed_spread_cents"])
+        for trade in enriched
+        if trade.get("observed_spread_cents") is not None
+    ]
+    return {
+        "trades_with_market_history": len(enriched),
+        "coverage_ratio": round(len(enriched) / len(trades), 6) if trades else 0.0,
+        "avg_entry_delta_cents": round(sum(entry_deltas) / len(entry_deltas), 6) if entry_deltas else None,
+        "avg_observed_spread_cents": round(sum(spreads) / len(spreads), 6) if spreads else None,
+    }
+
+
+def _event_replay(
+    rows: list[sqlite3.Row],
+    *,
+    market_history_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    market_history_index = market_history_index or {}
+    simulated_trades: list[dict[str, Any]] = []
+    skipped: dict[str, int] = defaultdict(int)
+    first_seen: dict[str, sqlite3.Row] = {}
+
+    for row in rows:
+        market_key = f"{row['event_slug']}|{row['market_slug']}|{row['side']}"
+        if market_key in first_seen:
+            skipped["duplicate_market_after_entry"] += 1
+            continue
+
+        if row["degraded_reason"] and not bool(row["policy_allowed"]):
+            skipped[f"degraded:{row['degraded_reason']}"] += 1
+            continue
+        if not bool(row["policy_allowed"]):
+            skipped[f"policy:{row['policy_reason'] or 'blocked'}"] += 1
+            continue
+        if str(row["price_source"] or "").lower() == "gamma_outcome_price":
+            skipped["non_executable_price_source"] += 1
+            continue
+
+        entry_price_cents = _safe_float(row["price_cents"])
+        settled_price_cents = _safe_float(row["settled_price_cents"])
+        generated_at = _parse_iso(row["generated_at"])
+        resolved_at = _parse_iso(row["resolved_at"])
+        if (
+            entry_price_cents is None
+            or entry_price_cents <= 0
+            or settled_price_cents is None
+            or generated_at is None
+        ):
+            skipped["invalid_row"] += 1
+            continue
+
+        snapshot = _select_market_snapshot(
+            market_history_index.get(str(row["market_slug"] or "").strip(), []),
+            target_time=generated_at,
+        )
+        snapshot_last_price, snapshot_best_ask, snapshot_best_bid = _snapshot_side_fields(
+            str(row["side"] or ""),
+            snapshot,
+        )
+        observed_spread_cents = None
+        if snapshot_best_ask is not None and snapshot_best_bid is not None:
+            observed_spread_cents = round(max(0.0, snapshot_best_ask - snapshot_best_bid), 6)
+        entry_vs_snapshot_delta_cents = None
+        if snapshot_best_ask is not None:
+            entry_vs_snapshot_delta_cents = round(entry_price_cents - snapshot_best_ask, 6)
+        elif snapshot_last_price is not None:
+            entry_vs_snapshot_delta_cents = round(entry_price_cents - snapshot_last_price, 6)
+
+        stake_usd = 1.0
+        shares = round(stake_usd / (entry_price_cents / 100.0), 6)
+        payout_usd = round(shares * (settled_price_cents / 100.0), 6)
+        pnl_usd = round(payout_usd - stake_usd, 6)
+        roi_percent = round((pnl_usd / stake_usd) * 100.0, 4)
+        first_seen[market_key] = row
+        simulated_trades.append(
+            {
+                "market_key": market_key,
+                "generated_at": generated_at.isoformat(),
+                "resolved_at": resolved_at.isoformat() if resolved_at else None,
+                "city_key": row["city_key"],
+                "event_slug": row["event_slug"],
+                "market_slug": row["market_slug"],
+                "event_title": row["event_title"],
+                "bucket": row["bucket"],
+                "side": row["side"],
+                "entry_price_cents": round(entry_price_cents, 4),
+                "settled_price_cents": round(settled_price_cents, 4),
+                "stake_usd": stake_usd,
+                "shares": shares,
+                "payout_usd": payout_usd,
+                "pnl_usd": pnl_usd,
+                "roi_percent": roi_percent,
+                "confidence_tier": row["confidence_tier"],
+                "policy_reason": row["policy_reason"],
+                "market_history_used": snapshot is not None,
+                "market_snapshot_at": snapshot["captured_at"].isoformat() if snapshot is not None else None,
+                "market_snapshot_price_cents": round(snapshot_last_price, 6) if snapshot_last_price is not None else None,
+                "market_snapshot_best_ask_cents": round(snapshot_best_ask, 6) if snapshot_best_ask is not None else None,
+                "market_snapshot_best_bid_cents": round(snapshot_best_bid, 6) if snapshot_best_bid is not None else None,
+                "observed_spread_cents": observed_spread_cents,
+                "entry_vs_snapshot_delta_cents": entry_vs_snapshot_delta_cents,
+            }
+        )
+
+    wins = sum(1 for trade in simulated_trades if trade["pnl_usd"] > 0)
+    losses = sum(1 for trade in simulated_trades if trade["pnl_usd"] < 0)
+    pnl_total = round(sum(trade["pnl_usd"] for trade in simulated_trades), 6)
+    return {
+        "trades": simulated_trades,
+        "simulated_trades": len(simulated_trades),
+        "wins": wins,
+        "losses": losses,
+        "win_rate_percent": round((wins / len(simulated_trades)) * 100.0, 4)
+        if simulated_trades
+        else None,
+        "pnl_usd": pnl_total,
+        "skipped": dict(sorted(skipped.items())),
+        "market_history_summary": _build_market_history_summary(simulated_trades),
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Replay minimo orientado a eventos com scans gravados em ordem temporal."
@@ -394,6 +536,10 @@ def main(argv: list[str] | None = None) -> None:
     gate_path.parent.mkdir(parents=True, exist_ok=True)
 
     prediction_rows, run_rows = _fetch_rows(db_path)
+    market_history_rows = _fetch_market_history_rows(
+        db_path,
+        lookback_hours=max(0, int(args.recent_lookback_hours)),
+    )
     prediction_rows = _filter_recent_rows(
         prediction_rows,
         timestamp_key="generated_at",
@@ -409,7 +555,10 @@ def main(argv: list[str] | None = None) -> None:
         expected_interval_seconds=max(1, args.expected_interval_seconds),
         gap_ratio=max(1.0, args.max_gap_ratio),
     )
-    replay = _event_replay(prediction_rows)
+    replay = _event_replay(
+        prediction_rows,
+        market_history_index=_build_market_history_index(market_history_rows),
+    )
     trades = replay["trades"]
     point_in_time_validation = _build_point_in_time_validation(
         prediction_rows,
@@ -443,6 +592,7 @@ def main(argv: list[str] | None = None) -> None:
             "usa apenas scans realmente gravados no banco",
             "nao reconstrui scans perdidos fora do historico salvo",
             "assume fill imediato no preco executavel gravado",
+            "usa snapshots historicos de mercado apenas como contexto auxiliar quando disponiveis",
             "nao simula latencia, slippage ou filas de maker",
             "nao e suficiente sozinho para validar prontidao de producao",
         ],
@@ -457,6 +607,7 @@ def main(argv: list[str] | None = None) -> None:
             "pnl_usd": replay["pnl_usd"],
             "skipped": replay["skipped"],
         },
+        "market_history_summary": replay["market_history_summary"],
         "by_confidence": _group_trade_summary(trades, "confidence_tier"),
         "by_policy": _group_trade_summary(trades, "policy_reason"),
         "by_city": _group_trade_summary(trades, "city_key"),
