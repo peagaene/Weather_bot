@@ -17,6 +17,7 @@ def _evaluate_opportunity(
     max_orders_per_event: int,
     plans_by_slug: dict[str, object] | None,
     per_event: dict[str, int],
+    enforce_plan_validity: bool = False,
 ) -> tuple[bool, str | None]:
     policy = apply_trade_policy(opportunity)
     setattr(opportunity, "risk_label", policy.risk_label)
@@ -42,15 +43,41 @@ def _evaluate_opportunity(
         plan = plans_by_slug.get(key)
         if plan is not None and not bool(getattr(plan, "valid", True)):
             reason = str(getattr(plan, "invalid_reason", "invalid_plan"))
-            setattr(opportunity, "policy_allowed", False)
-            setattr(opportunity, "policy_reason", reason)
-            return False, f"plan:{reason}"
+            setattr(opportunity, "plan_valid", False)
+            setattr(opportunity, "plan_invalid_reason", reason)
+            if enforce_plan_validity:
+                setattr(opportunity, "policy_allowed", False)
+                setattr(opportunity, "policy_reason", reason)
+                return False, f"plan:{reason}"
         if plan is not None and float(getattr(plan, "share_size", 0.0)) > max_share_size:
             setattr(opportunity, "policy_allowed", False)
             setattr(opportunity, "policy_reason", "share_size_above_max")
             return False, "share_size_above_max"
     per_event[event_slug] = per_event.get(event_slug, 0) + 1
     return True, None
+
+
+def _best_opportunity_per_event(opportunities: list) -> list:
+    grouped: dict[str, object] = {}
+    for opportunity in opportunities:
+        event_slug = str(getattr(opportunity, "event_slug", "") or "")
+        current = grouped.get(event_slug)
+        if current is None:
+            grouped[event_slug] = opportunity
+            continue
+        current_score = float(getattr(current, "weighted_score", 0.0) or 0.0)
+        candidate_score = float(getattr(opportunity, "weighted_score", 0.0) or 0.0)
+        if candidate_score > current_score:
+            grouped[event_slug] = opportunity
+            continue
+        if candidate_score == current_score:
+            current_edge = float(getattr(current, "edge", 0.0) or 0.0)
+            candidate_edge = float(getattr(opportunity, "edge", 0.0) or 0.0)
+            if candidate_edge > current_edge:
+                grouped[event_slug] = opportunity
+    selected = list(grouped.values())
+    selected.sort(key=lambda item: float(getattr(item, "weighted_score", 0.0) or 0.0), reverse=True)
+    return selected
 
 
 def filter_opportunities(
@@ -66,7 +93,7 @@ def filter_opportunities(
 ) -> list:
     filtered = []
     per_event: dict[str, int] = {}
-    for opportunity in opportunities:
+    for opportunity in _best_opportunity_per_event(opportunities):
         allowed, _ = _evaluate_opportunity(
             opportunity,
             min_price_cents=min_price_cents,
@@ -77,6 +104,7 @@ def filter_opportunities(
             max_orders_per_event=max_orders_per_event,
             plans_by_slug=plans_by_slug,
             per_event=per_event,
+            enforce_plan_validity=False,
         )
         if allowed:
             filtered.append(opportunity)
@@ -97,7 +125,7 @@ def summarize_filter_rejections(
     reasons: Counter[str] = Counter()
     per_event: dict[str, int] = {}
 
-    for opportunity in opportunities:
+    for opportunity in _best_opportunity_per_event(opportunities):
         allowed, reason = _evaluate_opportunity(
             opportunity,
             min_price_cents=min_price_cents,
@@ -108,6 +136,7 @@ def summarize_filter_rejections(
             max_orders_per_event=max_orders_per_event,
             plans_by_slug=plans_by_slug,
             per_event=per_event,
+            enforce_plan_validity=True,
         )
         if not allowed and reason:
             reasons[reason] += 1
@@ -130,7 +159,7 @@ def explain_blocked_opportunities(
     blocked: list[dict[str, Any]] = []
     per_event: dict[str, int] = {}
 
-    for opportunity in opportunities:
+    for opportunity in _best_opportunity_per_event(opportunities):
         allowed, reason = _evaluate_opportunity(
             opportunity,
             min_price_cents=min_price_cents,
@@ -141,6 +170,7 @@ def explain_blocked_opportunities(
             max_orders_per_event=max_orders_per_event,
             plans_by_slug=plans_by_slug,
             per_event=per_event,
+            enforce_plan_validity=True,
         )
         if allowed or not reason:
             continue

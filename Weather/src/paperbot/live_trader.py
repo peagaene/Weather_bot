@@ -119,6 +119,60 @@ def _sanitize_response_payload(response: Any) -> dict[str, Any]:
     return safe
 
 
+def _build_open_order_params(token_id: str) -> Any:
+    try:
+        from py_clob_client.clob_types import OpenOrderParams
+
+        return OpenOrderParams(asset_id=token_id)
+    except Exception:
+        return token_id
+
+
+def _client_get_orders(client: Any, token_id: str) -> list[dict[str, Any]]:
+    request_payload = _build_open_order_params(token_id)
+    call_patterns = (
+        (request_payload,),
+        (),
+    )
+    for args in call_patterns:
+        try:
+            payload = client.get_orders(*args)
+        except TypeError:
+            continue
+        except Exception:
+            return []
+        if isinstance(payload, list):
+            return payload
+    return []
+
+
+def _build_trade_params(maker_address: str, token_id: str) -> Any:
+    try:
+        from py_clob_client.clob_types import TradeParams
+
+        return TradeParams(maker_address=maker_address, asset_id=token_id)
+    except Exception:
+        return {"maker_address": maker_address, "asset_id": token_id}
+
+
+def _client_get_trades(client: Any, maker_address: str, token_id: str) -> list[dict[str, Any]]:
+    request_payload = _build_trade_params(maker_address, token_id)
+    call_patterns = (
+        (request_payload,),
+        (),
+    )
+    for args in call_patterns:
+        try:
+            payload = client.get_trades(*args)
+        except TypeError:
+            continue
+        except Exception:
+            return []
+        if isinstance(payload, list):
+            return payload
+    return []
+
+
 def _order_side_for_plan(plan: OrderPlan) -> str:
     return "BUY"
 
@@ -463,21 +517,28 @@ def _match_open_order_candidate(
     share_size: float,
     submission_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    try:
-        from py_clob_client.clob_types import OpenOrderParams
-    except Exception:
-        return None
-    try:
-        orders = client.get_orders(OpenOrderParams(asset_id=token_id))
-    except Exception:
+    orders = _client_get_orders(client, token_id)
+    if not orders:
         return None
     matches: list[dict[str, Any]] = []
     identity_matches: list[dict[str, Any]] = []
+    nonce_matches: list[dict[str, Any]] = []
     for order in orders:
         if str(order.get("side", "")).upper() != order_side:
             continue
         if submission_identity and _submission_identity_matches(order, submission_identity):
             identity_matches.append(order)
+            continue
+        candidate = _extract_order_identity(order)
+        if (
+            submission_identity
+            and submission_identity.get("token_id")
+            and submission_identity.get("nonce")
+            and candidate.get("token_id") == submission_identity.get("token_id")
+            and candidate.get("side") == str(submission_identity.get("side") or "").upper()
+            and candidate.get("nonce") == str(submission_identity.get("nonce") or "")
+        ):
+            nonce_matches.append(order)
             continue
         order_price_cents = _extract_order_price_cents(order)
         order_size = _safe_float(order.get("size"))
@@ -491,6 +552,8 @@ def _match_open_order_candidate(
     if submission_identity:
         if len(identity_matches) == 1:
             return identity_matches[0]
+        if len(nonce_matches) == 1:
+            return nonce_matches[0]
         return None
     if len(matches) == 1:
         return matches[0]
@@ -498,14 +561,7 @@ def _match_open_order_candidate(
 
 
 def _list_same_side_open_orders(client: Any, token_id: str, order_side: str) -> list[dict[str, Any]]:
-    try:
-        from py_clob_client.clob_types import OpenOrderParams
-    except Exception:
-        return []
-    try:
-        orders = client.get_orders(OpenOrderParams(asset_id=token_id))
-    except Exception:
-        return []
+    orders = _client_get_orders(client, token_id)
     return [order for order in orders if str(order.get("side", "")).upper() == order_side]
 
 
@@ -568,20 +624,12 @@ def _fetch_order_details(client: Any, exchange_order_id: str | None) -> dict[str
 
 
 def _fetch_candidate_trades(client: Any, token_id: str, maker_candidates: list[str]) -> list[dict[str, Any]]:
-    try:
-        from py_clob_client.clob_types import TradeParams
-    except Exception:
-        return []
-
     trades: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for maker_address in maker_candidates:
         if not maker_address:
             continue
-        try:
-            payload = client.get_trades(TradeParams(maker_address=maker_address, asset_id=token_id))
-        except Exception:
-            continue
+        payload = _client_get_trades(client, maker_address, token_id)
         for item in payload:
             if not isinstance(item, dict):
                 continue
@@ -848,8 +896,6 @@ def execute_order_plan(
     signed_order = None
     submission_identity: dict[str, Any] = {}
     try:
-        from py_clob_client.clob_types import OrderArgs, OrderType
-
         same_side_orders = _list_same_side_open_orders(client, plan.token_id, order_side)
         if same_side_orders and not replace_open_orders:
             return ExecutionResult(
@@ -917,6 +963,8 @@ def execute_order_plan(
                         client_order_id=client_order_id,
                         order_status="rejected",
                     )
+
+        from py_clob_client.clob_types import OrderArgs, OrderType
 
         order_args = OrderArgs(
             token_id=plan.token_id,

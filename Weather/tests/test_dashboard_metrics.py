@@ -14,6 +14,7 @@ from paperbot.dashboard_metrics import (
     compute_open_position_totals,
     normalize_open_positions,
 )
+from paperbot.weather_dashboard_ui import _snapshot_net_worth_metrics
 
 
 def test_normalize_open_positions_prefers_value_minus_cost() -> None:
@@ -62,3 +63,17 @@ def test_build_live_snapshot_curve_prefers_net_worth_delta() -> None:
 
     assert list(curve["pnl_curve_usd"]) == [0.0, 1.5]
     assert list(curve["pnl_curve_label"]) == ["PnL da curva", "PnL da curva"]
+
+
+def test_snapshot_net_worth_metrics_uses_full_wallet_curve() -> None:
+    curve = build_live_snapshot_curve(
+        [
+            {"captured_at": "2026-03-09T00:00:00+00:00", "total_net_worth_usd": 100.0, "total_open_pnl_usd": 4.0},
+            {"captured_at": "2026-03-09T12:00:00+00:00", "total_net_worth_usd": 106.0, "total_open_pnl_usd": 1.0},
+        ]
+    )
+
+    starting_capital, total_pnl, _daily_pnl = _snapshot_net_worth_metrics(curve)
+
+    assert starting_capital == 100.0
+    assert total_pnl == 6.0

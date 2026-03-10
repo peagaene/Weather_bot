@@ -123,6 +123,7 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     spread = float(getattr(opportunity, "spread", 0.0) or 0.0)
     price = float(getattr(opportunity, "price_cents", 0.0) or 0.0)
     coverage_ok = bool(getattr(opportunity, "coverage_ok", False))
+    coverage_score = float(getattr(opportunity, "coverage_score", 0.0) or 0.0)
     degraded_reason = str(getattr(opportunity, "degraded_reason", "") or "").strip()
     executable_quality_score = float(getattr(opportunity, "executable_quality_score", 0.0) or 0.0)
     data_quality_score = float(getattr(opportunity, "data_quality_score", 0.0) or 0.0)
@@ -134,30 +135,31 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     provider_failures = {str(item).strip().lower() for item in (getattr(opportunity, "provider_failures", None) or []) if str(item).strip()}
     allowed_signal_tiers = {
         item.strip().upper()
-        for item in str(os.getenv("WEATHER_POLICY_ALLOWED_SIGNAL_TIERS", "A+,A")).split(",")
+        for item in str(os.getenv("WEATHER_POLICY_ALLOWED_SIGNAL_TIERS", "A+,A,B")).split(",")
         if item.strip()
     }
 
-    policy_min_edge = float(os.getenv("WEATHER_POLICY_MIN_EDGE", "18"))
-    policy_min_consensus = float(os.getenv("WEATHER_POLICY_MIN_CONSENSUS", "0.55"))
+    policy_min_edge = float(os.getenv("WEATHER_POLICY_MIN_EDGE", "10"))
+    policy_min_consensus = float(os.getenv("WEATHER_POLICY_MIN_CONSENSUS", "0.42"))
     policy_min_price = float(os.getenv("WEATHER_POLICY_MIN_PRICE_CENTS", os.getenv("WEATHER_MIN_PRICE_CENTS", "10")))
-    policy_max_price = float(os.getenv("WEATHER_POLICY_MAX_PRICE_CENTS", os.getenv("WEATHER_MAX_PRICE_CENTS", "55")))
-    policy_max_spread = float(os.getenv("WEATHER_POLICY_MAX_SPREAD", os.getenv("WEATHER_MAX_MODEL_SPREAD", "3.0")))
-    near_safe_min_edge = float(os.getenv("WEATHER_POLICY_NEAR_SAFE_MIN_EDGE", "25"))
-    near_safe_min_consensus = float(os.getenv("WEATHER_POLICY_NEAR_SAFE_MIN_CONSENSUS", "0.65"))
-    min_worst_case_edge = float(os.getenv("WEATHER_POLICY_MIN_WORST_CASE_EDGE", "10"))
-    min_execution_quality = float(os.getenv("WEATHER_POLICY_MIN_EXECUTION_QUALITY", "0.6"))
-    min_data_quality = float(os.getenv("WEATHER_POLICY_MIN_DATA_QUALITY", "0.55"))
+    policy_max_price = float(os.getenv("WEATHER_POLICY_MAX_PRICE_CENTS", os.getenv("WEATHER_MAX_PRICE_CENTS", "60")))
+    policy_max_spread = float(os.getenv("WEATHER_POLICY_MAX_SPREAD", os.getenv("WEATHER_MAX_MODEL_SPREAD", "4.0")))
+    near_safe_min_edge = float(os.getenv("WEATHER_POLICY_NEAR_SAFE_MIN_EDGE", "18"))
+    near_safe_min_consensus = float(os.getenv("WEATHER_POLICY_NEAR_SAFE_MIN_CONSENSUS", "0.5"))
+    min_worst_case_edge = float(os.getenv("WEATHER_POLICY_MIN_WORST_CASE_EDGE", "4"))
+    min_execution_quality = float(os.getenv("WEATHER_POLICY_MIN_EXECUTION_QUALITY", "0.2"))
+    min_data_quality = float(os.getenv("WEATHER_POLICY_MIN_DATA_QUALITY", "0.3"))
+    min_coverage_score = float(os.getenv("WEATHER_POLICY_MIN_COVERAGE_SCORE", "0.45"))
     fallback_enabled = str(os.getenv("WEATHER_POLICY_ALLOW_FALLBACK_COVERAGE", "1")).strip().lower() not in {"0", "false", "no"}
     fallback_min_models = int(os.getenv("WEATHER_POLICY_FALLBACK_MIN_VALID_MODELS", "4") or 4)
-    fallback_min_worst_case_edge = float(os.getenv("WEATHER_POLICY_FALLBACK_MIN_WORST_CASE_EDGE", "12") or 12)
-    fallback_min_execution_quality = float(os.getenv("WEATHER_POLICY_FALLBACK_MIN_EXECUTION_QUALITY", "0.6") or 0.6)
+    fallback_min_worst_case_edge = float(os.getenv("WEATHER_POLICY_FALLBACK_MIN_WORST_CASE_EDGE", "8") or 8)
+    fallback_min_execution_quality = float(os.getenv("WEATHER_POLICY_FALLBACK_MIN_EXECUTION_QUALITY", "0.4") or 0.4)
     tolerated_failures = {
         item.strip().lower()
         for item in str(
             os.getenv(
                 "WEATHER_POLICY_FALLBACK_TOLERATED_PROVIDER_FAILURES",
-                "best_match,ecmwf,gem,gfs,icon,jma,ecmwf_ens,gfs_ens,icon_ens,tomorrow",
+                "best_match,ecmwf,gem,gfs,icon,jma,ecmwf_ens,gfs_ens,icon_ens,tomorrow,weatherapi,visualcrossing,openweather",
             )
         ).split(",")
         if item.strip()
@@ -165,35 +167,35 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
 
     fallback_coverage_ok = (
         fallback_enabled
-        and coverage_issue_type == "provider_failure"
-        and valid_model_count >= max(fallback_min_models, required_model_count)
+        and coverage_issue_type in {"provider_failure", "mixed", "rate_limited", "mixed_rate_limited"}
+        and valid_model_count >= fallback_min_models
         and total_models == valid_model_count
-        and agreement_models == total_models
         and min_agreeing_model_edge >= fallback_min_worst_case_edge
         and executable_quality_score >= fallback_min_execution_quality
         and provider_failures.issubset(tolerated_failures)
     )
 
-    if not coverage_ok and not fallback_coverage_ok:
+    effective_coverage_ok = coverage_ok or coverage_score >= min_coverage_score or fallback_coverage_ok
+    if not effective_coverage_ok:
         return PolicyDecision(False, "coverage_not_ok", risk_label, risk_score)
-    if degraded_reason and not fallback_coverage_ok:
+    if degraded_reason and degraded_reason != "degraded_clob_price" and not fallback_coverage_ok:
         return PolicyDecision(False, f"degraded:{degraded_reason}", risk_label, risk_score)
     effective_signal_tier = signal_tier
     if fallback_coverage_ok and signal_tier == "C":
-        effective_signal_tier = "A"
+        effective_signal_tier = "B"
     if effective_signal_tier not in allowed_signal_tiers:
         return PolicyDecision(False, "signal_tier_not_actionable", risk_label, risk_score)
     if confidence_tier == "risky":
         return PolicyDecision(False, "confidence_risky", risk_label, risk_score)
     if risk_label == "Risky":
         return PolicyDecision(False, "risk_label_risky", risk_label, risk_score)
-    if risk_label != "Safe" and not (fallback_coverage_ok and risk_label == "Moderate"):
+    if risk_label == "Moderate" and effective_signal_tier not in {"A+", "A", "B"}:
         return PolicyDecision(False, "risk_label_not_safe", risk_label, risk_score)
     if min_agreeing_model_edge < min_worst_case_edge:
         return PolicyDecision(False, "worst_case_edge_too_low", risk_label, risk_score)
     if executable_quality_score < min_execution_quality:
         return PolicyDecision(False, "execution_quality_too_low", risk_label, risk_score)
-    if data_quality_score < min_data_quality and not fallback_coverage_ok:
+    if data_quality_score < min_data_quality and not fallback_coverage_ok and coverage_score < 0.7:
         return PolicyDecision(False, "data_quality_too_low", risk_label, risk_score)
     if price < policy_min_price:
         return PolicyDecision(False, "price_below_policy_min", risk_label, risk_score)
@@ -212,7 +214,7 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
             return PolicyDecision(False, "near_safe_edge_too_low", risk_label, risk_score)
         if consensus < near_safe_min_consensus:
             return PolicyDecision(False, "near_safe_consensus_too_low", risk_label, risk_score)
-        if risk_label != "Safe":
+        if risk_label == "Risky":
             return PolicyDecision(False, "near_safe_requires_safe_risk", risk_label, risk_score)
         return PolicyDecision(True, "allowed", risk_label, risk_score)
     return PolicyDecision(False, "confidence_not_allowed", risk_label, risk_score)

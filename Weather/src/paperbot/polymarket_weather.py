@@ -54,6 +54,7 @@ class WeatherOpportunity:
     agreeing_model_names: list[str] | None = None
     confidence_tier: str = "risky"
     coverage_ok: bool = False
+    coverage_score: float = 0.0
     coverage_issue_type: str | None = None
     valid_model_count: int = 0
     required_model_count: int = 0
@@ -71,6 +72,7 @@ class WeatherOpportunity:
     executable_quality_score: float = 0.0
     data_quality_score: float = 0.0
     adversarial_score: float = 0.0
+    execution_priority_score: float = 0.0
     signal_tier: str = "C"
     signal_decision: str = "watch"
 
@@ -453,6 +455,32 @@ def _signal_tier(
     return "C", "watch", round(adversarial_score * 100.0, 2)
 
 
+def _execution_priority_score(
+    *,
+    edge: float,
+    min_agreeing_model_edge: float,
+    consensus_score: float,
+    executable_quality_score: float,
+    data_quality_score: float,
+    agreement_pct: float,
+) -> float:
+    edge_component = max(0.0, min(1.0, edge / 30.0))
+    worst_case_component = max(0.0, min(1.0, min_agreeing_model_edge / 20.0))
+    consensus_component = max(0.0, min(1.0, consensus_score))
+    execution_component = max(0.0, min(1.0, executable_quality_score))
+    data_component = max(0.0, min(1.0, data_quality_score))
+    agreement_component = max(0.0, min(1.0, agreement_pct / 100.0))
+    composite = (
+        (edge_component * 0.45)
+        + (worst_case_component * 0.25)
+        + (consensus_component * 0.15)
+        + (execution_component * 0.10)
+        + (data_component * 0.05)
+        + (agreement_component * 0.0)
+    )
+    return round(composite * 100.0, 2)
+
+
 def _model_side_agreement_pct(
     predictions: dict[str, float],
     low: float,
@@ -568,6 +596,14 @@ def _build_opportunity(
         data_quality_score=data_quality_score,
         consensus_score=ensemble.consensus_score,
     )
+    execution_priority_score = _execution_priority_score(
+        edge=edge,
+        min_agreeing_model_edge=min_agreeing_model_edge,
+        consensus_score=ensemble.consensus_score,
+        executable_quality_score=executable_quality_score,
+        data_quality_score=data_quality_score,
+        agreement_pct=agreeing_pct,
+    )
     return WeatherOpportunity(
         city_key=city.key,
         city_name=city.display_name,
@@ -583,7 +619,7 @@ def _build_opportunity(
         model_prob=round(model_prob, 4),
         market_prob=round(market_prob, 4),
         ensemble_prediction=ensemble.blended_high,
-        weighted_score=round(adversarial_score, 4),
+        weighted_score=round(execution_priority_score, 4),
         consensus_score=ensemble.consensus_score,
         spread=ensemble.spread,
         sigma=ensemble.sigma,
@@ -601,6 +637,7 @@ def _build_opportunity(
         agreeing_model_names=agreeing_model_names,
         confidence_tier=_confidence_tier_from_agreement_with_count(agreement_pct, total_models),
         coverage_ok=bool(getattr(ensemble, "coverage_ok", False)),
+        coverage_score=float(getattr(ensemble, "coverage_score", 0.0) or 0.0),
         coverage_issue_type=getattr(ensemble, "coverage_issue_type", None),
         valid_model_count=int(getattr(ensemble, "valid_model_count", 0) or 0),
         required_model_count=int(getattr(ensemble, "required_model_count", 0) or 0),
@@ -616,6 +653,7 @@ def _build_opportunity(
         executable_quality_score=executable_quality_score,
         data_quality_score=data_quality_score,
         adversarial_score=adversarial_score,
+        execution_priority_score=execution_priority_score,
         signal_tier=signal_tier,
         signal_decision=signal_decision,
     )

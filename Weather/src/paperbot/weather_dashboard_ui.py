@@ -5,6 +5,7 @@ import time
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from paperbot.dashboard_metrics import (
@@ -1023,52 +1024,394 @@ def render_positions_panel(state: dict, *, refresh_seconds: int = DEFAULT_REFRES
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _value_class(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    if float(value) > 0:
+        return "positive"
+    if float(value) < 0:
+        return "negative"
+    return ""
+
+
+def _signed_usd(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "--"
+    numeric = float(value)
+    prefix = "+" if numeric > 0 else ""
+    return f"{prefix}{fmt_usd(numeric)}"
+
+
+def _kpi_card_html(label: str, value: str, sub: str, class_name: str = "") -> str:
+    extra = f" {class_name}" if class_name else ""
+    return (
+        '<div class="kpi-card">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value{extra}">{value}</div>'
+        f'<div class="kpi-sub">{sub}</div>'
+        "</div>"
+    )
+
+
+def _curve_legend_card_html(label: str, value: str, sub: str, class_name: str = "") -> str:
+    extra = f" {class_name}" if class_name else ""
+    return (
+        f'<div class="curve-legend-card{extra}">'
+        f'<div class="curve-legend-label">{label}</div>'
+        f'<div class="curve-legend-value">{value}</div>'
+        f'<div class="curve-legend-sub">{sub}</div>'
+        "</div>"
+    )
+
+
+def _snapshot_net_worth_metrics(snapshot_curve: pd.DataFrame) -> tuple[float | None, float | None, float | None]:
+    if snapshot_curve.empty:
+        return None, None, None
+    curve = snapshot_curve.copy()
+    net_worth = pd.to_numeric(curve.get("total_net_worth_usd"), errors="coerce")
+    if net_worth.isna().all():
+        baseline = 0.0
+        pnl_curve = pd.to_numeric(curve.get("pnl_curve_usd"), errors="coerce").fillna(0.0)
+        if pnl_curve.empty:
+            return None, None, None
+        starting_capital = baseline
+        total_pnl = float(pnl_curve.iloc[-1])
+        daily_pnl = total_pnl
+        return starting_capital, total_pnl, daily_pnl
+    curve = curve.assign(_net_worth=net_worth).dropna(subset=["_net_worth"]).copy()
+    if curve.empty:
+        return None, None, None
+    starting_capital = float(curve["_net_worth"].iloc[0])
+    total_pnl = float(curve["_net_worth"].iloc[-1] - starting_capital)
+    curve["_day"] = pd.to_datetime(curve["captured_at"], errors="coerce").dt.floor("D")
+    latest_day = curve["_day"].dropna().iloc[-1] if curve["_day"].notna().any() else None
+    if latest_day is None:
+        return starting_capital, total_pnl, total_pnl
+    latest_day_rows = curve[curve["_day"] == latest_day]
+    previous_rows = curve[curve["_day"] < latest_day]
+    if latest_day_rows.empty:
+        daily_pnl = total_pnl
+    elif previous_rows.empty:
+        daily_pnl = float(latest_day_rows["_net_worth"].iloc[-1] - starting_capital)
+    else:
+        daily_pnl = float(latest_day_rows["_net_worth"].iloc[-1] - previous_rows["_net_worth"].iloc[-1])
+    return starting_capital, total_pnl, daily_pnl
+
+
+def _paginate_frame(frame: pd.DataFrame, *, session_key: str, page_size: int = 5) -> tuple[pd.DataFrame, int, int]:
+    if frame.empty:
+        st.session_state[session_key] = 0
+        return frame, 0, 1
+    total_pages = max(1, (len(frame) + page_size - 1) // page_size)
+    current_page = int(st.session_state.get(session_key, 0))
+    current_page = max(0, min(current_page, total_pages - 1))
+    st.session_state[session_key] = current_page
+    start = current_page * page_size
+    end = start + page_size
+    return frame.iloc[start:end].copy(), current_page, total_pages
+
+
+def _render_pagination_controls(*, session_key: str, current_page: int, total_pages: int, key_prefix: str) -> None:
+    left, mid, right = st.columns([1.1, 2.2, 1.1])
+    with left:
+        if st.button("Anterior", key=f"{key_prefix}_prev", disabled=current_page <= 0, width="stretch"):
+            st.session_state[session_key] = max(0, current_page - 1)
+            st.rerun()
+    with mid:
+        st.markdown(
+            f'<div class="muted" style="text-align:center; padding-top:0.45rem;">Pagina {current_page + 1} de {total_pages}</div>',
+            unsafe_allow_html=True,
+        )
+    with right:
+        if st.button("Proxima", key=f"{key_prefix}_next", disabled=current_page >= total_pages - 1, width="stretch"):
+            st.session_state[session_key] = min(total_pages - 1, current_page + 1)
+            st.rerun()
+
+
+def _render_open_positions_ops_panel(open_positions: pd.DataFrame) -> None:
+    normalized = normalize_open_positions(open_positions)
+    ordered = normalized.sort_values(
+        by=["opened_at"] if "opened_at" in normalized.columns else ["dashboard_value_usd"],
+        ascending=False,
+        na_position="last",
+    ).copy()
+    page, current_page, total_pages = _paginate_frame(ordered, session_key="dashboard_open_positions_page", page_size=5)
+    st.markdown(
+        f"""
+        <div class="ops-panel">
+            <div class="ops-head">
+                <div class="ops-title">Open Positions</div>
+                <div class="ops-badge">{len(ordered)} positions</div>
+            </div>
+            <div class="table-shell">
+                <div class="table-header" style="grid-template-columns: 3.2fr 0.8fr 0.9fr 0.9fr 0.9fr 1fr;">
+                    <div>Market</div>
+                    <div>Outcome</div>
+                    <div>Size</div>
+                    <div>Entry</div>
+                    <div>Current</div>
+                    <div>P&L</div>
+                </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if page.empty:
+        st.markdown('<div class="table-row" style="grid-template-columns: 1fr;"><div class="muted">Nenhuma posicao aberta.</div></div>', unsafe_allow_html=True)
+    else:
+        for _, row in page.iterrows():
+            title = str(row.get("title") or row.get("market_slug") or "Market")
+            outcome = str(row.get("outcome") or row.get("side") or "").upper()
+            shares = pd.to_numeric(pd.Series([row.get("size", row.get("share_size"))]), errors="coerce").fillna(0.0).iloc[0]
+            avg_price = pd.to_numeric(pd.Series([row.get("avgPrice")]), errors="coerce").fillna(0.0).iloc[0] * 100.0
+            current_price = pd.to_numeric(pd.Series([row.get("curPrice")]), errors="coerce").fillna(0.0).iloc[0] * 100.0
+            open_pnl = pd.to_numeric(pd.Series([row.get("dashboard_open_pnl_usd")]), errors="coerce").fillna(0.0).iloc[0]
+            opened_text = fmt_short_datetime(row.get("opened_at"))
+            pnl_class = "num-positive" if open_pnl >= 0 else "num-negative"
+            outcome_class = "pill-no" if outcome == "NO" else "pill-yes"
+            st.markdown(
+                f"""
+                <div class="table-row" style="grid-template-columns: 3.2fr 0.8fr 0.9fr 0.9fr 0.9fr 1fr;">
+                    <div class="market-col">
+                        <div class="market-name">{title}</div>
+                        <div class="market-meta">{opened_text}</div>
+                    </div>
+                    <div><span class="pill {outcome_class}">{outcome or '--'}</span></div>
+                    <div>{fmt_num(shares)}</div>
+                    <div>{fmt_cents(avg_price)}</div>
+                    <div>{fmt_cents(current_price)}</div>
+                    <div class="{pnl_class}">{_signed_usd(open_pnl)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    st.markdown("</div></div>", unsafe_allow_html=True)
+    _render_pagination_controls(
+        session_key="dashboard_open_positions_page",
+        current_page=current_page,
+        total_pages=total_pages,
+        key_prefix="dashboard_open_positions",
+    )
+
+
+def _build_recent_trades_frame(state: dict) -> pd.DataFrame:
+    candidates: list[pd.DataFrame] = []
+    live_positions = state.get("live_positions", pd.DataFrame())
+    if isinstance(live_positions, pd.DataFrame) and not live_positions.empty:
+        frame = live_positions.copy()
+        frame["trade_time"] = pd.to_datetime(frame.get("opened_at"), errors="coerce", utc=True)
+        candidates.append(frame)
+    closed_positions = state.get("effective_closed_positions", pd.DataFrame())
+    if isinstance(closed_positions, pd.DataFrame) and not closed_positions.empty:
+        frame = closed_positions.copy()
+        resolved = pd.to_datetime(frame.get("resolved_at"), errors="coerce", utc=True)
+        opened = pd.to_datetime(frame.get("opened_at"), errors="coerce", utc=True)
+        frame["trade_time"] = resolved.fillna(opened)
+        candidates.append(frame)
+    if not candidates:
+        return pd.DataFrame()
+    combined = pd.concat(candidates, ignore_index=True, sort=False)
+    combined["trade_time"] = pd.to_datetime(combined["trade_time"], errors="coerce", utc=True)
+    combined = combined[combined["trade_time"].notna()].copy()
+    if combined.empty:
+        return combined
+    return combined.sort_values("trade_time", ascending=False).drop_duplicates(
+        subset=["market_slug", "side", "trade_time"], keep="first"
+    )
+
+
+def _render_recent_trades_ops_panel(state: dict) -> int:
+    trades = _build_recent_trades_frame(state)
+    page, current_page, total_pages = _paginate_frame(trades, session_key="dashboard_recent_trades_page", page_size=5)
+    st.markdown(
+        f"""
+        <div class="ops-panel">
+            <div class="ops-head">
+                <div class="ops-title">Recent Trades</div>
+                <div class="ops-badge">{len(trades)} trades</div>
+            </div>
+            <div class="table-shell">
+                <div class="table-header" style="grid-template-columns: 1fr 3.1fr 0.9fr 0.9fr 0.8fr 0.9fr 0.8fr;">
+                    <div>Time</div>
+                    <div>Market</div>
+                    <div>Side</div>
+                    <div>Outcome</div>
+                    <div>Size</div>
+                    <div>Price</div>
+                    <div>Status</div>
+                </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if page.empty:
+        st.markdown('<div class="table-row" style="grid-template-columns: 1fr;"><div class="muted">Nenhum trade recente.</div></div>', unsafe_allow_html=True)
+    else:
+        for _, row in page.iterrows():
+            title = str(row.get("title") or row.get("market_slug") or "Market")
+            side = str(row.get("side") or "").upper()
+            outcome = str(row.get("outcome") or row.get("side") or "").upper()
+            size = pd.to_numeric(pd.Series([row.get("share_size", row.get("size"))]), errors="coerce").fillna(0.0).iloc[0]
+            entry_price = pd.to_numeric(pd.Series([row.get("entry_price_cents")]), errors="coerce").fillna(0.0).iloc[0]
+            if entry_price <= 0:
+                entry_price = pd.to_numeric(pd.Series([row.get("avgPrice")]), errors="coerce").fillna(0.0).iloc[0] * 100.0
+            status = str(row.get("status") or "filled").upper()
+            time_text = fmt_short_datetime(row.get("trade_time"))
+            side_class = "pill-buy" if side in {"BUY", "YES"} else "pill-sell"
+            outcome_class = "pill-yes" if outcome == "YES" else "pill-no"
+            status_class = "pill-filled" if status in {"RESOLVED", "FILLED", "OPEN"} else "pill-closed"
+            st.markdown(
+                f"""
+                <div class="table-row" style="grid-template-columns: 1fr 3.1fr 0.9fr 0.9fr 0.8fr 0.9fr 0.8fr;">
+                    <div>{time_text}</div>
+                    <div class="market-col">
+                        <div class="market-name">{title}</div>
+                        <div class="market-meta">{str(row.get("market_slug") or "--")}</div>
+                    </div>
+                    <div><span class="pill {side_class}">{side or '--'}</span></div>
+                    <div><span class="pill {outcome_class}">{outcome or '--'}</span></div>
+                    <div>{fmt_num(size)}</div>
+                    <div>{fmt_cents(entry_price)}</div>
+                    <div><span class="pill {status_class}">{status}</span></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    st.markdown("</div></div>", unsafe_allow_html=True)
+    _render_pagination_controls(
+        session_key="dashboard_recent_trades_page",
+        current_page=current_page,
+        total_pages=total_pages,
+        key_prefix="dashboard_recent_trades",
+    )
+    if trades.empty:
+        return 0
+    today = pd.Timestamp.now(tz="UTC").floor("D")
+    daily_trades = trades[trades["trade_time"].dt.floor("D") == today]
+    return int(len(daily_trades))
+
+
+def _render_curve_panel(snapshot_curve: pd.DataFrame, live_open_positions: pd.DataFrame) -> None:
+    st.markdown(
+        """
+        <div class="curve-panel">
+            <div class="ops-head">
+                <div class="ops-title">Profit &amp; Loss</div>
+                <div class="ops-badge">wallet curve</div>
+            </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if snapshot_curve.empty:
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.info("Ainda nao ha snapshots suficientes para montar a curva de patrimonio.")
+        return
+    curve = snapshot_curve.copy()
+    starting_capital, total_pnl, daily_pnl = _snapshot_net_worth_metrics(curve)
+    latest_net_worth = pd.to_numeric(curve.get("total_net_worth_usd"), errors="coerce").dropna()
+    pnl_curve = pd.to_numeric(curve.get("pnl_curve_usd"), errors="coerce").fillna(0.0)
+    open_pnl = compute_open_position_totals(live_open_positions)[1] if not live_open_positions.empty else 0.0
+    latest_value = float(latest_net_worth.iloc[-1]) if not latest_net_worth.empty else None
+    curve_min = float(pnl_curve.min()) if not pnl_curve.empty else 0.0
+    curve_max = float(pnl_curve.max()) if not pnl_curve.empty else 0.0
+    legend_cards = [
+        _curve_legend_card_html("Wallet Value", fmt_usd(latest_value), "patrimonio total"),
+        _curve_legend_card_html("Total P&L", _signed_usd(total_pnl), "desde o primeiro snapshot"),
+        _curve_legend_card_html("Daily P&L", _signed_usd(daily_pnl), "variacao do ultimo dia"),
+        _curve_legend_card_html("Open P&L", _signed_usd(open_pnl), f"range {fmt_usd(curve_min)} a {fmt_usd(curve_max)}"),
+    ]
+    st.markdown(f'<div class="curve-legend-grid">{"".join(legend_cards)}</div>', unsafe_allow_html=True)
+    times = pd.to_datetime(curve["captured_at"], errors="coerce")
+    figure = go.Figure()
+    figure.add_hline(y=0, line_width=1, line_color="rgba(127,146,191,0.35)")
+    figure.add_trace(
+        go.Scatter(
+            x=times,
+            y=pnl_curve.clip(lower=0.0),
+            mode="lines",
+            line=dict(color="rgba(87, 227, 137, 0)"),
+            fill="tozeroy",
+            fillcolor="rgba(87, 227, 137, 0.18)",
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=times,
+            y=pnl_curve.clip(upper=0.0),
+            mode="lines",
+            line=dict(color="rgba(255, 123, 136, 0)"),
+            fill="tozeroy",
+            fillcolor="rgba(255, 123, 136, 0.14)",
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=times,
+            y=pnl_curve,
+            mode="lines",
+            line=dict(color="#ff6b7a", width=3),
+            hovertemplate="%{x|%d/%m %H:%M}<br>P&L: $%{y:,.2f}<extra></extra>",
+            showlegend=False,
+        )
+    )
+    figure.update_layout(
+        height=330,
+        margin=dict(l=12, r=12, t=8, b=8),
+        xaxis_title="Time",
+        yaxis_title="Profit / Loss (USD)",
+        hovermode="x unified",
+        **PLOTLY_LAYOUT,
+    )
+    figure.update_xaxes(showgrid=False, color="#93a7d4", title_font=dict(size=12))
+    figure.update_yaxes(gridcolor="rgba(147,167,212,0.12)", zeroline=False, color="#93a7d4", title_font=dict(size=12))
+    st.plotly_chart(figure, width="stretch")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_unified_dashboard(
     state: dict,
     *,
     refresh_seconds: int = DEFAULT_REFRESH_SECONDS,
     monitor_seconds: int = DEFAULT_MONITOR_SECONDS,
 ) -> None:
-    effective_open_positions = normalize_open_positions(state["effective_open_positions"])
-    raw_predictions = state.get("latest_details", {}).get("raw_predictions", [])
-    degraded_count = sum(1 for item in raw_predictions if str(item.get("degraded_reason") or "").strip())
-    blocked_count = sum(1 for item in raw_predictions if not bool(item.get("policy_allowed")))
-    if degraded_count > 0:
-        st.warning(f"Ultimo scan em modo degradado: {degraded_count} previsoes com dados degradados.")
-    elif blocked_count > 0 and not state["opportunities"].empty:
-        st.info(f"Ultimo scan bloqueou {blocked_count} previsoes por politica; oportunidades restantes continuam validas.")
-    elif blocked_count > 0 and state["opportunities"].empty:
-        st.info(f"Ultimo scan bloqueou {blocked_count} previsoes por politica; nenhuma entrada liberada.")
-    left, right = st.columns([1.2, 1.0], gap="large")
-    with left:
-        render_market_scanner(
-            state["opportunities"],
-            default_monitor_seconds=monitor_seconds,
-            show_toolbar=True,
-        )
-        st.markdown('<div class="section-card"><div class="section-title">Scanner Details</div></div>', unsafe_allow_html=True)
-        render_scanner_details(state["opportunities"])
-    with right:
-        render_positions_panel(state, refresh_seconds=refresh_seconds)
-    render_blocked_opportunities_panel(
-        state["blocked_opportunities"],
-        state["filter_rejections"],
-        title="Sinais Bloqueados",
-        key_prefix="unified_blocked",
-        refresh_seconds=refresh_seconds,
+    effective_open_positions = normalize_open_positions(state.get("effective_open_positions", pd.DataFrame()))
+    live_positions = state.get("live_positions", pd.DataFrame())
+    live_snapshot_curve = state.get("live_snapshot_curve", pd.DataFrame())
+    wallet_snapshot = state.get("public_wallet_snapshot", {}) or {}
+    portfolio_value, open_pnl = compute_open_position_totals(effective_open_positions)
+    starting_capital, total_pnl, daily_pnl = _snapshot_net_worth_metrics(live_snapshot_curve)
+    cash_balance = wallet_snapshot.get("liquid_cash_usd") if wallet_snapshot.get("ok") else None
+    cash_float = float(cash_balance) if cash_balance is not None else 0.0
+    total_value = cash_float + portfolio_value
+    curve_total_net_worth = pd.to_numeric(live_snapshot_curve.get("total_net_worth_usd"), errors="coerce").dropna()
+    if not curve_total_net_worth.empty:
+        total_value = float(curve_total_net_worth.iloc[-1])
+    daily_trades = _build_recent_trades_frame(state)
+    today = pd.Timestamp.now(tz="UTC").floor("D")
+    daily_trade_count = 0 if daily_trades.empty else int((daily_trades["trade_time"].dt.floor("D") == today).sum())
+    deployed = max(0.0, total_value - cash_float)
+    total_pnl_pct = ((float(total_pnl) / float(starting_capital)) * 100.0) if starting_capital not in (None, 0) and total_pnl is not None else None
+    daily_pnl_pct = (
+        (float(daily_pnl) / float(total_value - float(daily_pnl))) * 100.0
+        if daily_pnl is not None and (total_value - float(daily_pnl)) not in (0, 0.0)
+        else None
     )
-    bottom_left, bottom_right = st.columns([0.95, 2.05], gap="large")
-    with bottom_left:
-        render_account_summary_card(
-            state["live_positions"],
-            effective_open_positions,
-            state["live_resolved_positions"],
-            state["public_wallet_snapshot"],
-            closed_positions_count=0 if state["effective_closed_positions"].empty else len(state["effective_closed_positions"]),
-        )
-    with bottom_right:
-        render_pnl_board(
-            state["live_resolved_positions"],
-            state["live_snapshot_curve"],
-            show_title=True,
-        )
+    kpis = [
+        _kpi_card_html("Total Value", fmt_usd(total_value), f"starting capital {fmt_usd(starting_capital)}"),
+        _kpi_card_html("Cash Balance", fmt_usd(cash_balance), f"deployed: {fmt_usd(deployed)}"),
+        _kpi_card_html("Daily P&L", _signed_usd(daily_pnl), fmt_percent(daily_pnl_pct), _value_class(daily_pnl)),
+        _kpi_card_html("Total P&L", _signed_usd(total_pnl), fmt_percent(total_pnl_pct), _value_class(total_pnl)),
+        _kpi_card_html("Open Positions", str(len(effective_open_positions)), "active markets"),
+        _kpi_card_html("Daily Trades", str(daily_trade_count), "today"),
+    ]
+    st.markdown(f'<div class="kpi-grid">{"".join(kpis)}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ops-grid">', unsafe_allow_html=True)
+    left, right = st.columns(2, gap="large")
+    with left:
+        _render_open_positions_ops_panel(effective_open_positions)
+    with right:
+        _render_recent_trades_ops_panel(state)
+    st.markdown("</div>", unsafe_allow_html=True)
+    _render_curve_panel(live_snapshot_curve, effective_open_positions)

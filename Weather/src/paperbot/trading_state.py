@@ -162,6 +162,21 @@ class TradingStateStore:
             self.data["daily_live_orders"] = 0
             self.data["daily_bucket_live_orders"] = {}
 
+    def _prune_old_entries(self, *, retention_minutes: int) -> None:
+        if retention_minutes <= 0:
+            return
+        cutoff = _utcnow() - timedelta(minutes=retention_minutes)
+        for key in ("last_city_trade", "last_event_trade", "last_bucket_trade"):
+            mapping = self.data.get(key)
+            if not isinstance(mapping, dict):
+                self.data[key] = {}
+                continue
+            self.data[key] = {
+                item_key: item_value
+                for item_key, item_value in mapping.items()
+                if (_parse_ts(str(item_value)) or cutoff) >= cutoff
+            }
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -179,6 +194,13 @@ class TradingStateStore:
         bucket_cooldown_minutes: int,
     ) -> PolicyDecision:
         self._roll_day_if_needed()
+        retention_minutes = max(
+            city_cooldown_minutes,
+            event_cooldown_minutes,
+            bucket_cooldown_minutes,
+            60,
+        ) * 3
+        self._prune_old_entries(retention_minutes=retention_minutes)
         if daily_live_limit > 0 and int(self.data.get("daily_live_orders", 0)) >= daily_live_limit:
             return PolicyDecision(False, "daily_live_limit_reached")
         bucket_counts = self.data.get("daily_bucket_live_orders", {})
@@ -204,6 +226,7 @@ class TradingStateStore:
 
     def record_live_execution(self, *, city_key: str, event_slug: str, bucket_key: str) -> None:
         self._roll_day_if_needed()
+        self._prune_old_entries(retention_minutes=24 * 60)
         self.data["daily_live_orders"] = int(self.data.get("daily_live_orders", 0)) + 1
         bucket_counts = self.data.setdefault("daily_bucket_live_orders", {})
         bucket_counts[bucket_key] = int(bucket_counts.get(bucket_key, 0)) + 1

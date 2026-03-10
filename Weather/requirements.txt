@@ -5,3 +5,6 @@ pandas
 plotly
 python-dotenv
 py-clob-client
+xarray
+cfgrib
+eccodes

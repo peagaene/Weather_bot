@@ -23,8 +23,6 @@ from paperbot.storage import WeatherBotStorage
 from paperbot.wallet_chain import fetch_public_wallet_snapshot, resolve_public_wallet_address
 from paperbot.weather_dashboard_theme import configure_dashboard_theme
 from paperbot.weather_dashboard_ui import (
-    build_opportunities_frame,
-    blocked_opportunities_frame,
     live_snapshot_curve_frame,
     positions_frame,
     public_closed_positions_frame,
@@ -72,13 +70,6 @@ def load_positions(limit: int = 500) -> list[dict]:
 
 
 @st.cache_data(ttl=10)
-def load_recent_opportunity_ranges(keys: tuple[tuple[str, str], ...]) -> dict:
-    if not keys:
-        return {}
-    return get_storage().recent_opportunity_ranges(list(keys))
-
-
-@st.cache_data(ttl=10)
 def load_latest_dashboard_state() -> dict:
     runs = runs_frame(load_runs())
     positions = positions_frame(load_positions())
@@ -88,16 +79,12 @@ def load_latest_dashboard_state() -> dict:
     latest_details = {"opportunities": [], "order_plans": []}
     if not runs.empty:
         latest_details = load_run_details(runs.iloc[0]["run_id"])
-    recent_ranges = load_recent_opportunity_ranges(
-        tuple((str(item.get("market_slug")), str(item.get("side"))) for item in latest_details.get("opportunities", []))
-    )
     return {
         "runs_frame": runs,
         "live_positions": live_positions,
         "live_open_positions": live_open_positions,
         "live_resolved_positions": live_resolved_positions,
         "latest_details": latest_details,
-        "opportunities": build_opportunities_frame(latest_details, live_open_positions, recent_ranges),
     }
 
 
@@ -195,14 +182,6 @@ def _load_dashboard_state() -> dict:
     if effective_closed_positions.empty:
         effective_closed_positions = state["live_resolved_positions"]
     latest_details = latest_snapshot if latest_snapshot else state.get("latest_details", {"opportunities": [], "order_plans": []})
-    recent_ranges = load_recent_opportunity_ranges(
-        tuple((str(item.get("market_slug")), str(item.get("side"))) for item in latest_details.get("opportunities", []))
-    )
-    opportunities = build_opportunities_frame(latest_details, effective_open_positions, recent_ranges)
-    blocked_snapshot = {
-        "blocked_opportunities": latest_snapshot.get("blocked_opportunities", []),
-        "filter_rejections": latest_snapshot.get("filter_rejections", {}),
-    }
     effective_wallet_snapshot = dict(public_wallet_snapshot)
     if not effective_wallet_snapshot.get("ok") and wallet_snapshot.get("ok"):
         effective_wallet_snapshot["ok"] = True
@@ -245,9 +224,6 @@ def _load_dashboard_state() -> dict:
         "effective_open_positions": effective_open_positions,
         "effective_closed_positions": effective_closed_positions,
         "latest_details": latest_details,
-        "opportunities": opportunities,
-        "blocked_opportunities": blocked_opportunities_frame(blocked_snapshot),
-        "filter_rejections": blocked_snapshot["filter_rejections"],
         "live_snapshot_curve": live_snapshot_curve_frame(get_storage().list_live_account_snapshots()),
     }
 

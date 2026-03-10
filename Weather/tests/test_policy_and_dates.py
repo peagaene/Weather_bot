@@ -34,7 +34,7 @@ class PolicyAndDatesTests(unittest.TestCase):
         self.assertEqual(sea_dates[1].date().isoformat(), "2026-03-09")
         self.assertEqual(mia_dates[1].date().isoformat(), "2026-03-09")
 
-    def test_policy_requires_actionable_signal_tier_and_worst_case_edge(self) -> None:
+    def test_policy_allows_actionable_b_tier_signal_after_relaxation(self) -> None:
         opportunity = type(
             "Opportunity",
             (),
@@ -56,8 +56,8 @@ class PolicyAndDatesTests(unittest.TestCase):
             },
         )()
         decision = apply_trade_policy(opportunity)
-        self.assertFalse(decision.allowed)
-        self.assertEqual(decision.reason, "signal_tier_not_actionable")
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
 
     def test_policy_allows_fallback_coverage_for_strong_4_of_4_consensus(self) -> None:
         opportunity = type(

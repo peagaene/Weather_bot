@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -11,7 +12,12 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from paperbot.degendoppler import CITY_CONFIGS
-from paperbot.weather_models import ModelForecast, build_ensemble_for_date
+from paperbot.weather_models import (
+    ModelForecast,
+    _hrrr_step_schedule,
+    _hrrr_target_local_dates,
+    build_ensemble_for_date,
+)
 
 
 class WeatherModelsEnsembleTests(unittest.TestCase):
@@ -131,6 +137,24 @@ class WeatherModelsEnsembleTests(unittest.TestCase):
         self.assertIsNotNone(ensemble)
         assert ensemble is not None
         self.assertEqual(ensemble.coverage_issue_type, "mixed_rate_limited")
+
+    def test_hrrr_step_schedule_uses_coarser_steps_after_near_term_window(self) -> None:
+        steps = _hrrr_step_schedule(36)
+        self.assertIn(0, steps)
+        self.assertIn(24, steps)
+        self.assertIn(30, steps)
+        self.assertIn(36, steps)
+        self.assertNotIn(27, steps)
+        self.assertNotIn(33, steps)
+
+    def test_hrrr_target_dates_focus_on_short_horizon(self) -> None:
+        city = next(item for item in CITY_CONFIGS if item.key == "SEA")
+        dates = _hrrr_target_local_dates(
+            city,
+            reference=datetime(2026, 3, 9, 6, 0, tzinfo=timezone.utc),
+            target_days=2,
+        )
+        self.assertEqual(dates, ["2026-03-08", "2026-03-09"])
 
 
 if __name__ == "__main__":
