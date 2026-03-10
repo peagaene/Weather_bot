@@ -80,6 +80,26 @@ def _best_opportunity_per_event(opportunities: list) -> list:
     return selected
 
 
+def _rank_opportunity(opportunity: object) -> tuple[float, float]:
+    return (
+        float(getattr(opportunity, "weighted_score", 0.0) or 0.0),
+        float(getattr(opportunity, "edge", 0.0) or 0.0),
+    )
+
+
+def _grouped_opportunities_by_event(opportunities: list) -> list[tuple[str, list[object]]]:
+    grouped: dict[str, list[object]] = {}
+    for opportunity in opportunities:
+        event_slug = str(getattr(opportunity, "event_slug", "") or "")
+        grouped.setdefault(event_slug, []).append(opportunity)
+    items: list[tuple[str, list[object]]] = []
+    for event_slug, candidates in grouped.items():
+        ordered = sorted(candidates, key=_rank_opportunity, reverse=True)
+        items.append((event_slug, ordered))
+    items.sort(key=lambda item: _rank_opportunity(item[1][0]) if item[1] else (0.0, 0.0), reverse=True)
+    return items
+
+
 def filter_opportunities(
     opportunities: list,
     *,
@@ -93,21 +113,26 @@ def filter_opportunities(
 ) -> list:
     filtered = []
     per_event: dict[str, int] = {}
-    for opportunity in _best_opportunity_per_event(opportunities):
-        allowed, _ = _evaluate_opportunity(
-            opportunity,
-            min_price_cents=min_price_cents,
-            max_price_cents=max_price_cents,
-            max_spread=max_spread,
-            max_share_size=max_share_size,
-            require_token=require_token,
+    for _event_slug, candidates in _grouped_opportunities_by_event(opportunities):
+        accepted_for_event = 0
+        for opportunity in candidates:
+            if max_orders_per_event > 0 and accepted_for_event >= max_orders_per_event:
+                break
+            allowed, _ = _evaluate_opportunity(
+                opportunity,
+                min_price_cents=min_price_cents,
+                max_price_cents=max_price_cents,
+                max_spread=max_spread,
+                max_share_size=max_share_size,
+                require_token=require_token,
             max_orders_per_event=max_orders_per_event,
             plans_by_slug=plans_by_slug,
             per_event=per_event,
-            enforce_plan_validity=False,
+            enforce_plan_validity=True,
         )
-        if allowed:
-            filtered.append(opportunity)
+            if allowed:
+                filtered.append(opportunity)
+                accepted_for_event += 1
     return filtered
 
 

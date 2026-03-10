@@ -58,6 +58,10 @@ class ExecutionResult:
         }
 
 
+class LiveLookupError(RuntimeError):
+    pass
+
+
 def _sanitize_open_orders(orders: list[dict[str, Any]]) -> dict[str, Any]:
     summary_orders: list[dict[str, Any]] = []
     for order in orders[:10]:
@@ -134,16 +138,20 @@ def _client_get_orders(client: Any, token_id: str) -> list[dict[str, Any]]:
         (request_payload,),
         (),
     )
+    last_type_error: TypeError | None = None
     for args in call_patterns:
         try:
             payload = client.get_orders(*args)
         except TypeError:
+            last_type_error = TypeError()
             continue
-        except Exception:
-            return []
+        except Exception as exc:
+            raise LiveLookupError(f"get_orders_failed:{_sanitize_error_text(exc)}") from exc
         if isinstance(payload, list):
             return payload
-    return []
+    if last_type_error is not None:
+        return []
+    raise LiveLookupError("get_orders_failed:unsupported_response")
 
 
 def _build_trade_params(maker_address: str, token_id: str) -> Any:
@@ -161,16 +169,20 @@ def _client_get_trades(client: Any, maker_address: str, token_id: str) -> list[d
         (request_payload,),
         (),
     )
+    last_type_error: TypeError | None = None
     for args in call_patterns:
         try:
             payload = client.get_trades(*args)
         except TypeError:
+            last_type_error = TypeError()
             continue
-        except Exception:
-            return []
+        except Exception as exc:
+            raise LiveLookupError(f"get_trades_failed:{_sanitize_error_text(exc)}") from exc
         if isinstance(payload, list):
             return payload
-    return []
+    if last_type_error is not None:
+        return []
+    raise LiveLookupError("get_trades_failed:unsupported_response")
 
 
 def _order_side_for_plan(plan: OrderPlan) -> str:
@@ -626,10 +638,15 @@ def _fetch_order_details(client: Any, exchange_order_id: str | None) -> dict[str
 def _fetch_candidate_trades(client: Any, token_id: str, maker_candidates: list[str]) -> list[dict[str, Any]]:
     trades: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    last_error: LiveLookupError | None = None
     for maker_address in maker_candidates:
         if not maker_address:
             continue
-        payload = _client_get_trades(client, maker_address, token_id)
+        try:
+            payload = _client_get_trades(client, maker_address, token_id)
+        except LiveLookupError as exc:
+            last_error = exc
+            continue
         for item in payload:
             if not isinstance(item, dict):
                 continue
@@ -638,6 +655,8 @@ def _fetch_candidate_trades(client: Any, token_id: str, maker_candidates: list[s
                 continue
             seen_ids.add(trade_id)
             trades.append(item)
+    if not trades and last_error is not None:
+        raise last_error
     return trades
 
 
@@ -1076,16 +1095,19 @@ def sync_live_exchange_state(storage: Any) -> dict[str, Any]:
         token_id = str(order.get("token_id") or "")
         if not token_id:
             continue
-        order_status, reconciled_order_id, filled_shares, avg_fill_price_cents, order_payload, matched_trades = _reconcile_submission(
-            client,
-            token_id=token_id,
-            submitted_at=_parse_timestamp(order.get("first_seen_at")) or time.time(),
-            exchange_order_id=str(order.get("exchange_order_id") or "") or None,
-            order_side=str(order.get("side") or "BUY"),
-            price_cents=float(order.get("requested_price_cents") or 0.0),
-            share_size=float(order.get("requested_shares") or 0.0),
-            submission_identity=_load_submission_identity(order.get("raw_response_json")),
-        )
+        try:
+            order_status, reconciled_order_id, filled_shares, avg_fill_price_cents, order_payload, matched_trades = _reconcile_submission(
+                client,
+                token_id=token_id,
+                submitted_at=_parse_timestamp(order.get("first_seen_at")) or time.time(),
+                exchange_order_id=str(order.get("exchange_order_id") or "") or None,
+                order_side=str(order.get("side") or "BUY"),
+                price_cents=float(order.get("requested_price_cents") or 0.0),
+                share_size=float(order.get("requested_shares") or 0.0),
+                submission_identity=_load_submission_identity(order.get("raw_response_json")),
+            )
+        except LiveLookupError:
+            continue
         storage.sync_live_order_state(
             client_order_id=str(order["client_order_id"]),
             exchange_order_id=reconciled_order_id or str(order.get("exchange_order_id") or "") or None,

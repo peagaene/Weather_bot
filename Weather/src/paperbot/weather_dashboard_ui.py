@@ -1194,22 +1194,11 @@ def _render_open_positions_ops_panel(open_positions: pd.DataFrame) -> None:
 
 
 def _build_recent_trades_frame(state: dict) -> pd.DataFrame:
-    candidates: list[pd.DataFrame] = []
     live_positions = state.get("live_positions", pd.DataFrame())
-    if isinstance(live_positions, pd.DataFrame) and not live_positions.empty:
-        frame = live_positions.copy()
-        frame["trade_time"] = pd.to_datetime(frame.get("opened_at"), errors="coerce", utc=True)
-        candidates.append(frame)
-    closed_positions = state.get("effective_closed_positions", pd.DataFrame())
-    if isinstance(closed_positions, pd.DataFrame) and not closed_positions.empty:
-        frame = closed_positions.copy()
-        resolved = pd.to_datetime(frame.get("resolved_at"), errors="coerce", utc=True)
-        opened = pd.to_datetime(frame.get("opened_at"), errors="coerce", utc=True)
-        frame["trade_time"] = resolved.fillna(opened)
-        candidates.append(frame)
-    if not candidates:
+    if not isinstance(live_positions, pd.DataFrame) or live_positions.empty:
         return pd.DataFrame()
-    combined = pd.concat(candidates, ignore_index=True, sort=False)
+    combined = live_positions.copy()
+    combined["trade_time"] = pd.to_datetime(combined.get("opened_at"), errors="coerce", utc=True)
     combined["trade_time"] = pd.to_datetime(combined["trade_time"], errors="coerce", utc=True)
     combined = combined[combined["trade_time"].notna()].copy()
     if combined.empty:
@@ -1217,6 +1206,15 @@ def _build_recent_trades_frame(state: dict) -> pd.DataFrame:
     return combined.sort_values("trade_time", ascending=False).drop_duplicates(
         subset=["market_slug", "side", "trade_time"], keep="first"
     )
+
+
+def _recent_trade_status_class(status: str) -> str:
+    normalized = str(status or "").strip().upper()
+    if normalized in {"FILLED", "RESOLVED", "PARTIAL_FILL"}:
+        return "pill-filled"
+    if normalized in {"OPEN", "RESTING", "LIVE", "ACCEPTED"}:
+        return "pill-open"
+    return "pill-closed"
 
 
 def _render_recent_trades_ops_panel(state: dict) -> int:
@@ -1257,7 +1255,7 @@ def _render_recent_trades_ops_panel(state: dict) -> int:
             time_text = fmt_short_datetime(row.get("trade_time"))
             side_class = "pill-buy" if side in {"BUY", "YES"} else "pill-sell"
             outcome_class = "pill-yes" if outcome == "YES" else "pill-no"
-            status_class = "pill-filled" if status in {"RESOLVED", "FILLED", "OPEN"} else "pill-closed"
+            status_class = _recent_trade_status_class(status)
             st.markdown(
                 f"""
                 <div class="table-row" style="grid-template-columns: 1fr 3.1fr 0.9fr 0.9fr 0.8fr 0.9fr 0.8fr;">
@@ -1395,7 +1393,7 @@ def render_unified_dashboard(
     total_pnl_pct = ((float(total_pnl) / float(starting_capital)) * 100.0) if starting_capital not in (None, 0) and total_pnl is not None else None
     daily_pnl_pct = (
         (float(daily_pnl) / float(total_value - float(daily_pnl))) * 100.0
-        if daily_pnl is not None and (total_value - float(daily_pnl)) not in (0, 0.0)
+        if daily_pnl is not None and total_value is not None and (total_value - float(daily_pnl)) not in (0, 0.0)
         else None
     )
     kpis = [

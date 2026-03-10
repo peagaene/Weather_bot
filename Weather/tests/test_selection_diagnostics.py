@@ -11,7 +11,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from paperbot.selection import explain_blocked_opportunities
+from paperbot.selection import explain_blocked_opportunities, filter_opportunities
 
 
 class SelectionDiagnosticsTests(unittest.TestCase):
@@ -73,6 +73,49 @@ class SelectionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(blocked[0]["agreement_summary"], "4/5")
         self.assertEqual(blocked[0]["signal_tier"], "A")
         self.assertEqual(blocked[0]["agreeing_model_names"], ["nws", "weatherapi", "openweather", "visualcrossing"])
+
+    def test_filter_opportunities_selects_best_viable_candidate_within_event(self) -> None:
+        invalid = SimpleNamespace(
+            event_slug="mia-event",
+            market_slug="mia-market-a",
+            side="NO",
+            token_id="token-a",
+            price_cents=30.0,
+            spread=1.0,
+            weighted_score=90.0,
+            edge=14.0,
+        )
+        viable = SimpleNamespace(
+            event_slug="mia-event",
+            market_slug="mia-market-b",
+            side="NO",
+            token_id="token-b",
+            price_cents=29.0,
+            spread=1.0,
+            weighted_score=80.0,
+            edge=12.0,
+        )
+        invalid_plan = SimpleNamespace(valid=False, invalid_reason="share_size_below_order_min_size", share_size=1.2)
+        viable_plan = SimpleNamespace(valid=True, invalid_reason=None, share_size=2.5)
+        policy = SimpleNamespace(allowed=True, reason="allowed", risk_label="Safe", risk_score=0.1)
+
+        with patch("paperbot.selection.apply_trade_policy", return_value=policy):
+            selected = filter_opportunities(
+                [invalid, viable],
+                min_price_cents=10.0,
+                max_price_cents=65.0,
+                max_spread=4.0,
+                max_share_size=2.6,
+                require_token=True,
+                max_orders_per_event=1,
+                plans_by_slug={
+                    "mia-event|mia-market-a|NO": invalid_plan,
+                    "mia-event|mia-market-b|NO": viable_plan,
+                },
+            )
+
+        self.assertEqual(len(selected), 1)
+        self.assertIs(selected[0], viable)
 
 
 if __name__ == "__main__":

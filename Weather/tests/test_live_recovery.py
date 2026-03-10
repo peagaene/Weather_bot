@@ -131,6 +131,11 @@ class _FakeClient:
         return "maker-1"
 
 
+class _ErrorOrdersClient(_FakeClient):
+    def get_orders(self, _params=None) -> list[dict]:
+        raise RuntimeError("clob down")
+
+
 class LiveRecoveryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -230,6 +235,25 @@ class LiveRecoveryTests(unittest.TestCase):
         self.assertEqual(len(refreshed), 1)
         self.assertEqual(refreshed[0]["exchange_order_id"], "exchange-1")
 
+    def test_sync_live_exchange_state_skips_lookup_failures_without_updating_order(self) -> None:
+        self.storage.append_live_execution(
+            run_id="run-1",
+            generated_at="2026-03-08T12:00:00+00:00",
+            rank=1,
+            opportunity=_sample_opportunity(),
+            plan=_sample_plan(),
+            execution=_sample_execution(exchange_order_id=None, order_status="submission_unconfirmed", accepted=False),
+        )
+
+        with (
+            patch("paperbot.live_trader._build_client", return_value=(_ErrorOrdersClient(), None)),
+        ):
+            result = sync_live_exchange_state(self.storage)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checked_orders"], 1)
+        self.assertEqual(result["updated_orders"], 0)
+
     def test_match_open_order_candidate_prefers_submission_identity_nonce(self) -> None:
         client = _FakeClient(
             orders=[
@@ -314,6 +338,19 @@ class LiveRecoveryTests(unittest.TestCase):
         )
 
         self.assertIsNone(match)
+
+    def test_match_open_order_candidate_raises_lookup_error_on_order_fetch_failure(self) -> None:
+        client = _ErrorOrdersClient()
+
+        with self.assertRaisesRegex(RuntimeError, "get_orders_failed"):
+            _match_open_order_candidate(
+                client,
+                token_id="token-1",
+                order_side="BUY",
+                price_cents=39.0,
+                share_size=5.0,
+                submission_identity=None,
+            )
 
     def test_load_submission_identity_round_trip_from_string_payload(self) -> None:
         payload = {

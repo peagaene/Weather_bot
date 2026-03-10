@@ -14,7 +14,7 @@ from paperbot.dashboard_metrics import (
     compute_open_position_totals,
     normalize_open_positions,
 )
-from paperbot.weather_dashboard_ui import _snapshot_net_worth_metrics
+from paperbot.weather_dashboard_ui import _build_recent_trades_frame, _recent_trade_status_class, _snapshot_net_worth_metrics
 
 
 def test_normalize_open_positions_prefers_value_minus_cost() -> None:
@@ -77,3 +77,30 @@ def test_snapshot_net_worth_metrics_uses_full_wallet_curve() -> None:
 
     assert starting_capital == 100.0
     assert total_pnl == 6.0
+
+
+def test_build_recent_trades_frame_uses_live_positions_only() -> None:
+    live_positions = pd.DataFrame(
+        [
+            {"market_slug": "open-market", "side": "NO", "opened_at": "2026-03-09T10:00:00+00:00", "status": "open"},
+        ]
+    )
+    effective_closed_positions = pd.DataFrame(
+        [
+            {"market_slug": "closed-market", "side": "YES", "resolved_at": "2026-03-09T11:00:00+00:00", "status": "resolved"},
+        ]
+    )
+
+    recent = _build_recent_trades_frame(
+        {
+            "live_positions": live_positions,
+            "effective_closed_positions": effective_closed_positions,
+        }
+    )
+
+    assert list(recent["market_slug"]) == ["open-market"]
+
+
+def test_recent_trade_status_class_keeps_open_separate_from_filled() -> None:
+    assert _recent_trade_status_class("OPEN") == "pill-open"
+    assert _recent_trade_status_class("FILLED") == "pill-filled"
