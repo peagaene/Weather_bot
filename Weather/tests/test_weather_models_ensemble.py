@@ -229,6 +229,67 @@ class WeatherModelsEnsembleTests(unittest.TestCase):
         self.assertEqual(rows[0].date, "2026-03-09")
         self.assertEqual(rows[0].high, 61.0)
 
+    def test_fetch_nws_daily_uses_station_observation_plus_hourly_for_today(self) -> None:
+        city = next(item for item in CITY_CONFIGS if item.key == "SEA")
+
+        def _fake_request(url: str, provider_name: str, attempts: int):
+            if url.endswith(f"/points/{city.lat},{city.lon}"):
+                return {
+                    "properties": {
+                        "forecast": "https://api.weather.gov/gridpoints/SEW/forecast",
+                        "forecastHourly": "https://api.weather.gov/gridpoints/SEW/forecast/hourly",
+                    }
+                }
+            if url.endswith("/forecast"):
+                return {
+                    "properties": {
+                        "periods": [
+                            {
+                                "isDaytime": True,
+                                "startTime": "2026-03-10T06:00:00-07:00",
+                                "temperature": 46,
+                            }
+                        ]
+                    }
+                }
+            if url.endswith("/forecast/hourly"):
+                return {
+                    "properties": {
+                        "periods": [
+                            {
+                                "startTime": "2026-03-10T14:00:00-07:00",
+                                "temperature": 48,
+                                "temperatureUnit": "F",
+                            }
+                        ]
+                    }
+                }
+            if "/stations/" in url and "/observations" in url:
+                return {
+                    "features": [
+                        {
+                            "properties": {
+                                "timestamp": "2026-03-10T18:00:00+00:00",
+                                "temperature": {
+                                    "value": 10.0,
+                                    "unitCode": "wmoUnit:degC",
+                                },
+                            }
+                        }
+                    ]
+                }
+            raise AssertionError(url)
+
+        with patch("paperbot.weather_models._request_json_with_retry", side_effect=_fake_request):
+            with patch("paperbot.weather_models.datetime") as mock_datetime:
+                mock_datetime.now.return_value = datetime(2026, 3, 10, 20, 0, tzinfo=timezone.utc)
+                mock_datetime.fromisoformat.side_effect = datetime.fromisoformat
+                rows = _fetch_nws_daily(city)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].date, "2026-03-10")
+        self.assertEqual(rows[0].high, 50.0)
+
     def test_hrrr_subset_parser_prefers_inprocess_runtime(self) -> None:
         city = next(item for item in CITY_CONFIGS if item.key == "SEA")
         with patch("paperbot.weather_models._hrrr_inprocess_runtime_available", return_value=True):

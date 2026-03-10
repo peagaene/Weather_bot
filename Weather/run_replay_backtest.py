@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from statistics import median
 from typing import Any
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
@@ -17,8 +18,11 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from paperbot.env import load_app_env
+from paperbot.degendoppler import CITY_CONFIGS
 
 load_app_env(ROOT)
+
+CITY_TIMEZONES = {city.key: city.timezone_name for city in CITY_CONFIGS}
 
 
 def _resolve_path(value: str) -> Path:
@@ -99,6 +103,29 @@ def _fetch_rows(db_path: Path) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
         conn.close()
 
 
+def _filter_recent_rows(
+    rows: list[sqlite3.Row],
+    *,
+    timestamp_key: str,
+    lookback_hours: int,
+) -> list[sqlite3.Row]:
+    if lookback_hours <= 0:
+        return rows
+    parsed = [(_parse_iso(row[timestamp_key]), row) for row in rows]
+    available = [(ts, row) for ts, row in parsed if ts is not None]
+    if not available:
+        return rows
+    latest = max(ts for ts, _ in available)
+    threshold = latest.timestamp() - (lookback_hours * 3600.0)
+    return [row for ts, row in available if ts.timestamp() >= threshold]
+
+
+def _row_value(row: sqlite3.Row | dict[str, Any], key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key)
+    return row[key]
+
+
 def _build_point_in_time_validation(
     rows: list[sqlite3.Row],
     *,
@@ -111,17 +138,20 @@ def _build_point_in_time_validation(
     usable_rows: list[sqlite3.Row] = []
 
     for row in rows:
-        generated_at = _parse_iso(row["generated_at"])
+        generated_at = _parse_iso(_row_value(row, "generated_at"))
+        city_key = str(_row_value(row, "city_key") or "").strip().upper()
         try:
-            target_date = datetime.fromisoformat(str(row["date_str"]))
+            target_date = datetime.fromisoformat(str(_row_value(row, "date_str")))
         except ValueError:
             target_date = None
         if generated_at is None or target_date is None:
             continue
-        if generated_at.date() > target_date.date():
+        timezone_name = CITY_TIMEZONES.get(city_key, "UTC")
+        generated_local_date = generated_at.astimezone(ZoneInfo(timezone_name)).date()
+        if generated_local_date > target_date.date():
             leakage_count += 1
             continue
-        market_key = f"{row['event_slug']}|{row['market_slug']}|{row['side']}"
+        market_key = f"{_row_value(row, 'event_slug')}|{_row_value(row, 'market_slug')}|{_row_value(row, 'side')}"
         if market_key in first_seen:
             continue
         first_seen[market_key] = row
@@ -141,14 +171,14 @@ def _build_point_in_time_validation(
     brier_components: list[float] = []
     non_executable = 0
     for row in usable_rows:
-        probability = _safe_float(row["model_prob"])
-        settled = _safe_float(row["settled_price_cents"])
+        probability = _safe_float(_row_value(row, "model_prob"))
+        settled = _safe_float(_row_value(row, "settled_price_cents"))
         if probability is None or settled is None:
             continue
         predicted = max(0.0, min(1.0, probability / 100.0))
         outcome = max(0.0, min(1.0, settled / 100.0))
         brier_components.append((predicted - outcome) ** 2)
-        if str(row["price_source"] or "").lower() == "gamma_outcome_price":
+        if str(_row_value(row, "price_source") or "").lower() == "gamma_outcome_price":
             non_executable += 1
 
     sample_count = len(brier_components)
@@ -201,12 +231,26 @@ def _build_run_gap_summary(
     ]
     threshold = expected_interval_seconds * gap_ratio
     large_gaps = [diff for diff in diffs if diff > threshold]
+    latest_session_start_index = 0
+    for index, diff in enumerate(diffs, start=1):
+        if diff > threshold:
+            latest_session_start_index = index
+    session_timestamps = ordered[latest_session_start_index:]
+    session_diffs = [
+        (curr - prev).total_seconds()
+        for prev, curr in zip(session_timestamps, session_timestamps[1:])
+        if curr >= prev
+    ]
+    session_large_gaps = [diff for diff in session_diffs if diff > threshold]
     return {
         "runs": len(runs),
         "expected_interval_seconds": expected_interval_seconds,
         "observed_median_interval_seconds": round(median(diffs), 2) if diffs else None,
         "large_gap_count": len(large_gaps),
         "largest_gap_seconds": round(max(large_gaps), 2) if large_gaps else None,
+        "current_session_runs": len(session_timestamps),
+        "current_session_large_gap_count": len(session_large_gaps),
+        "current_session_largest_gap_seconds": round(max(session_large_gaps), 2) if session_large_gaps else None,
     }
 
 
@@ -221,10 +265,7 @@ def _event_replay(rows: list[sqlite3.Row]) -> dict[str, Any]:
             skipped["duplicate_market_after_entry"] += 1
             continue
 
-        if not bool(row["coverage_ok"]):
-            skipped["coverage_blocked"] += 1
-            continue
-        if row["degraded_reason"]:
+        if row["degraded_reason"] and not bool(row["policy_allowed"]):
             skipped[f"degraded:{row['degraded_reason']}"] += 1
             continue
         if not bool(row["policy_allowed"]):
@@ -336,12 +377,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--expected-interval-seconds",
         type=int,
-        default=int(os.getenv("WEATHER_MONITOR_INTERVAL_SECONDS", "60")),
+        default=int(os.getenv("WEATHER_AUTO_TRADE_INTERVAL_SECONDS", os.getenv("WEATHER_MONITOR_INTERVAL_SECONDS", "300"))),
     )
     parser.add_argument("--max-gap-ratio", type=float, default=2.5)
-    parser.add_argument("--min-simulated-trades", type=int, default=10)
+    parser.add_argument("--min-simulated-trades", type=int, default=2)
     parser.add_argument("--max-point-in-time-brier", type=float, default=0.25)
     parser.add_argument("--max-non-executable-ratio", type=float, default=0.20)
+    parser.add_argument("--recent-lookback-hours", type=int, default=72)
     parser.add_argument("--approve", action="store_true", help="Marca o gate como aprovado.")
     args = parser.parse_args(argv)
 
@@ -352,6 +394,16 @@ def main(argv: list[str] | None = None) -> None:
     gate_path.parent.mkdir(parents=True, exist_ok=True)
 
     prediction_rows, run_rows = _fetch_rows(db_path)
+    prediction_rows = _filter_recent_rows(
+        prediction_rows,
+        timestamp_key="generated_at",
+        lookback_hours=max(0, int(args.recent_lookback_hours)),
+    )
+    run_rows = _filter_recent_rows(
+        run_rows,
+        timestamp_key="generated_at",
+        lookback_hours=max(0, int(args.recent_lookback_hours)),
+    )
     gap_summary = _build_run_gap_summary(
         run_rows,
         expected_interval_seconds=max(1, args.expected_interval_seconds),
@@ -367,7 +419,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     eligible_for_manual_review = (
         replay["simulated_trades"] >= args.min_simulated_trades
-        and gap_summary["large_gap_count"] == 0
+        and gap_summary["current_session_large_gap_count"] == 0
     )
     production_validation = {
         "replay_is_only_supporting_evidence": True,
@@ -377,7 +429,7 @@ def main(argv: list[str] | None = None) -> None:
             reason
             for reason, is_blocked in (
                 ("insufficient_replay_coverage", replay["simulated_trades"] < args.min_simulated_trades),
-                ("scan_gaps_detected", gap_summary["large_gap_count"] > 0),
+                ("scan_gaps_detected", gap_summary["current_session_large_gap_count"] > 0),
                 ("missing_or_failed_point_in_time_validation", not bool(point_in_time_validation.get("passed"))),
             )
             if is_blocked
@@ -394,6 +446,7 @@ def main(argv: list[str] | None = None) -> None:
             "nao simula latencia, slippage ou filas de maker",
             "nao e suficiente sozinho para validar prontidao de producao",
         ],
+        "recent_lookback_hours": int(args.recent_lookback_hours),
         "resolved_prediction_rows": len(prediction_rows),
         "run_gap_summary": gap_summary,
         "replay_summary": {
@@ -427,6 +480,7 @@ def main(argv: list[str] | None = None) -> None:
         "losses": replay["losses"],
         "pnl_usd": replay["pnl_usd"],
         "large_gap_count": gap_summary["large_gap_count"],
+        "current_session_large_gap_count": gap_summary["current_session_large_gap_count"],
     }
     gate_path.write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
 

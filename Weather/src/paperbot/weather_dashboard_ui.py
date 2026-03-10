@@ -1194,13 +1194,22 @@ def _render_open_positions_ops_panel(open_positions: pd.DataFrame) -> None:
 
 
 def _build_recent_trades_frame(state: dict) -> pd.DataFrame:
-    live_positions = state.get("live_positions", pd.DataFrame())
-    if not isinstance(live_positions, pd.DataFrame) or live_positions.empty:
+    closed_positions = state.get("effective_closed_positions", pd.DataFrame())
+    if not isinstance(closed_positions, pd.DataFrame) or closed_positions.empty:
         return pd.DataFrame()
-    combined = live_positions.copy()
-    combined["trade_time"] = pd.to_datetime(combined.get("opened_at"), errors="coerce", utc=True)
+    combined = closed_positions.copy()
+    if "resolved_at" in combined.columns:
+        combined["trade_time"] = pd.to_datetime(combined.get("resolved_at"), errors="coerce", utc=True)
+    else:
+        combined["trade_time"] = pd.to_datetime(combined.get("opened_at"), errors="coerce", utc=True)
     combined["trade_time"] = pd.to_datetime(combined["trade_time"], errors="coerce", utc=True)
     combined = combined[combined["trade_time"].notna()].copy()
+    if combined.empty:
+        return combined
+    if "status" not in combined.columns:
+        combined["status"] = combined.get("activity_type", "RESOLVED")
+    combined["status"] = combined["status"].fillna("RESOLVED").astype(str).str.upper()
+    combined = combined[combined["status"].isin({"RESOLVED", "FILLED", "REDEEM", "CLAIM", "TRADE"})].copy()
     if combined.empty:
         return combined
     return combined.sort_values("trade_time", ascending=False).drop_duplicates(
@@ -1210,8 +1219,10 @@ def _build_recent_trades_frame(state: dict) -> pd.DataFrame:
 
 def _recent_trade_status_class(status: str) -> str:
     normalized = str(status or "").strip().upper()
-    if normalized in {"FILLED", "RESOLVED", "PARTIAL_FILL"}:
+    if normalized in {"FILLED", "PARTIAL_FILL"}:
         return "pill-filled"
+    if normalized in {"RESOLVED", "REDEEM", "CLAIM"}:
+        return "pill-closed"
     if normalized in {"OPEN", "RESTING", "LIVE", "ACCEPTED"}:
         return "pill-open"
     return "pill-closed"
@@ -1251,7 +1262,15 @@ def _render_recent_trades_ops_panel(state: dict) -> int:
             entry_price = pd.to_numeric(pd.Series([row.get("entry_price_cents")]), errors="coerce").fillna(0.0).iloc[0]
             if entry_price <= 0:
                 entry_price = pd.to_numeric(pd.Series([row.get("avgPrice")]), errors="coerce").fillna(0.0).iloc[0] * 100.0
-            status = str(row.get("status") or "filled").upper()
+            if entry_price <= 0:
+                entry_price = pd.to_numeric(pd.Series([row.get("settled_price_cents")]), errors="coerce").fillna(0.0).iloc[0]
+            raw_status = str(row.get("status") or row.get("activity_type") or "resolved").upper()
+            if raw_status in {"TRADE", "FILLED", "PARTIAL_FILL"}:
+                status = "FILLED"
+            elif raw_status in {"REDEEM", "CLAIM"}:
+                status = raw_status
+            else:
+                status = "RESOLVED"
             time_text = fmt_short_datetime(row.get("trade_time"))
             side_class = "pill-buy" if side in {"BUY", "YES"} else "pill-sell"
             outcome_class = "pill-yes" if outcome == "YES" else "pill-no"

@@ -79,7 +79,7 @@ def test_snapshot_net_worth_metrics_uses_full_wallet_curve() -> None:
     assert total_pnl == 6.0
 
 
-def test_build_recent_trades_frame_uses_live_positions_only() -> None:
+def test_build_recent_trades_frame_uses_only_finalized_trades_sorted_by_latest_first() -> None:
     live_positions = pd.DataFrame(
         [
             {"market_slug": "open-market", "side": "NO", "opened_at": "2026-03-09T10:00:00+00:00", "status": "open"},
@@ -87,7 +87,8 @@ def test_build_recent_trades_frame_uses_live_positions_only() -> None:
     )
     effective_closed_positions = pd.DataFrame(
         [
-            {"market_slug": "closed-market", "side": "YES", "resolved_at": "2026-03-09T11:00:00+00:00", "status": "resolved"},
+            {"market_slug": "older-closed-market", "side": "YES", "resolved_at": "2026-03-09T11:00:00+00:00", "status": "resolved"},
+            {"market_slug": "latest-closed-market", "side": "NO", "resolved_at": "2026-03-09T12:00:00+00:00", "status": "resolved"},
         ]
     )
 
@@ -98,9 +99,10 @@ def test_build_recent_trades_frame_uses_live_positions_only() -> None:
         }
     )
 
-    assert list(recent["market_slug"]) == ["open-market"]
+    assert list(recent["market_slug"]) == ["latest-closed-market", "older-closed-market"]
 
 
 def test_recent_trade_status_class_keeps_open_separate_from_filled() -> None:
     assert _recent_trade_status_class("OPEN") == "pill-open"
     assert _recent_trade_status_class("FILLED") == "pill-filled"
+    assert _recent_trade_status_class("RESOLVED") == "pill-closed"

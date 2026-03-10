@@ -1416,6 +1416,90 @@ def _fetch_open_meteo_ensemble_daily_highs(city: CityConfig, model_name: str, op
     return by_date
 
 
+def _to_fahrenheit(value: float | int | None, unit: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    normalized = str(unit or "").strip().upper()
+    if normalized in {"C", "DEGC", "CELSIUS"}:
+        return ((numeric * 9.0) / 5.0) + 32.0
+    return numeric
+
+
+def _nws_station_id(city: CityConfig) -> str | None:
+    return MOS_STATION_CODES.get(city.key)
+
+
+def _fetch_nws_observed_daily_highs(city: CityConfig, *, limit: int = 48) -> dict[str, float]:
+    station_id = _nws_station_id(city)
+    if not station_id:
+        return {}
+    url = f"{WEATHER_GOV_BASE_URL}/stations/{station_id}/observations?limit={max(1, int(limit))}"
+    data = _request_json_with_retry(
+        url,
+        provider_name="weather_gov",
+        attempts=WEATHER_NWS_RETRY_ATTEMPTS,
+    )
+    features = data.get("features") if isinstance(data, dict) else None
+    if not isinstance(features, list):
+        return {}
+    local_tz = ZoneInfo(city.timezone_name)
+    by_date: dict[str, float] = {}
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties")
+        if not isinstance(properties, dict):
+            continue
+        timestamp = str(properties.get("timestamp") or "").strip()
+        if not timestamp:
+            continue
+        try:
+            observed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        observed_local_date = observed_at.astimezone(local_tz).date().isoformat()
+        temperature = properties.get("temperature")
+        if not isinstance(temperature, dict):
+            continue
+        temp_f = _to_fahrenheit(temperature.get("value"), temperature.get("unitCode", "").split(":")[-1])
+        if temp_f is None:
+            continue
+        current = by_date.get(observed_local_date)
+        if current is None or temp_f > current:
+            by_date[observed_local_date] = round(temp_f, 2)
+    return by_date
+
+
+def _fetch_nws_hourly_daily_highs(forecast_hourly: dict[str, Any], city: CityConfig) -> dict[str, float]:
+    periods = (((forecast_hourly or {}).get("properties") or {}).get("periods")) or []
+    if not isinstance(periods, list):
+        return {}
+    local_tz = ZoneInfo(city.timezone_name)
+    by_date: dict[str, float] = {}
+    for period in periods:
+        if not isinstance(period, dict):
+            continue
+        start = str(period.get("startTime") or "").strip()
+        if not start:
+            continue
+        try:
+            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        date_key = start_dt.astimezone(local_tz).date().isoformat()
+        temp_f = _to_fahrenheit(period.get("temperature"), period.get("temperatureUnit"))
+        if temp_f is None:
+            continue
+        current = by_date.get(date_key)
+        if current is None or temp_f > current:
+            by_date[date_key] = round(temp_f, 2)
+    return by_date
+
+
 def _fetch_nws_daily(city: CityConfig) -> list[ModelForecast]:
     daily_cache_key = _cache_key_for_name(f"nws_daily/{city.key}")
     try:
@@ -1429,6 +1513,7 @@ def _fetch_nws_daily(city: CityConfig) -> list[ModelForecast]:
         if not isinstance(properties, dict):
             return []
         forecast_url = properties.get("forecast")
+        forecast_hourly_url = properties.get("forecastHourly")
         if not forecast_url:
             return []
 
@@ -1436,6 +1521,15 @@ def _fetch_nws_daily(city: CityConfig) -> list[ModelForecast]:
             str(forecast_url),
             provider_name="weather_gov",
             attempts=WEATHER_NWS_RETRY_ATTEMPTS,
+        )
+        forecast_hourly = (
+            _request_json_with_retry(
+                str(forecast_hourly_url),
+                provider_name="weather_gov",
+                attempts=WEATHER_NWS_RETRY_ATTEMPTS,
+            )
+            if forecast_hourly_url
+            else {}
         )
         periods = (((forecast or {}).get("properties") or {}).get("periods")) or []
         by_date: dict[str, float] = {}
@@ -1458,6 +1552,18 @@ def _fetch_nws_daily(city: CityConfig) -> list[ModelForecast]:
             current = by_date.get(date)
             if current is None or temp_f > current:
                 by_date[date] = temp_f
+        hourly_highs = _fetch_nws_hourly_daily_highs(forecast_hourly, city)
+        observed_highs = _fetch_nws_observed_daily_highs(city)
+        today_local = datetime.now(ZoneInfo(city.timezone_name)).date().isoformat()
+        intraday_today_high = max(
+            hourly_highs.get(today_local, float("-inf")),
+            observed_highs.get(today_local, float("-inf")),
+        )
+        if intraday_today_high != float("-inf"):
+            by_date[today_local] = round(
+                max(float(by_date.get(today_local, float("-inf"))), float(intraday_today_high)),
+                2,
+            )
         rows = [
             ModelForecast(model_name="nws", date=date, high=high, low=None, source="weather.gov")
             for date, high in sorted(by_date.items())

@@ -6,6 +6,7 @@ import os
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -20,6 +21,7 @@ POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_BASE_URL = os.getenv("POLYMARKET_CLOB_HOST", "https://clob.polymarket.com")
 MARKET_FEE = 0.02
 POLYMARKET_REQUEST_TIMEOUT_SECONDS = max(3.0, float(os.getenv("POLYMARKET_REQUEST_TIMEOUT_SECONDS", "8") or 8))
+POLYMARKET_GAMMA_RETRY_ATTEMPTS = max(1, int(os.getenv("POLYMARKET_GAMMA_RETRY_ATTEMPTS", "3") or 3))
 POLYMARKET_PRICE_RETRY_ATTEMPTS = max(1, int(os.getenv("POLYMARKET_PRICE_RETRY_ATTEMPTS", "2") or 2))
 
 
@@ -102,8 +104,19 @@ def _request_json(url: str, timeout: float = POLYMARKET_REQUEST_TIMEOUT_SECONDS)
             "Accept": "application/json",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    last_error: Exception | None = None
+    for attempt_idx in range(POLYMARKET_GAMMA_RETRY_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            last_error = exc
+            if attempt_idx >= POLYMARKET_GAMMA_RETRY_ATTEMPTS - 1:
+                break
+            time.sleep(0.35 * (attempt_idx + 1))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"failed to fetch {url}")
 
 
 def _fetch_batch_prices(token_ids: list[str], side: str) -> dict[str, float | None]:
@@ -153,7 +166,10 @@ def _slug_for(city: CityConfig, target_date: datetime) -> str:
 def fetch_market_scan(city: CityConfig, target_date: datetime, *, book_cache: dict[str, dict[str, float | None]] | None = None) -> MarketScan | None:
     slug = _slug_for(city, target_date)
     url = f"{POLYMARKET_GAMMA_BASE_URL}/events?slug={urllib.parse.quote(slug, safe='')}"
-    data = _request_json(url)
+    try:
+        data = _request_json(url)
+    except Exception:
+        return None
     if not isinstance(data, list) or not data:
         return None
     event = data[0]
