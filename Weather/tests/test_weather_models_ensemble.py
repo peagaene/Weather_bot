@@ -13,9 +13,13 @@ if str(SRC) not in sys.path:
 
 from paperbot.degendoppler import CITY_CONFIGS
 from paperbot.weather_models import (
+    _hrrr_daily_cache_key,
+    _cache_key_for_name,
     ModelForecast,
+    _fetch_nws_daily,
     _hrrr_step_schedule,
     _hrrr_target_local_dates,
+    _run_hrrr_subset_parser,
     build_ensemble_for_date,
 )
 
@@ -155,6 +159,45 @@ class WeatherModelsEnsembleTests(unittest.TestCase):
             target_days=2,
         )
         self.assertEqual(dates, ["2026-03-08", "2026-03-09"])
+
+    def test_hrrr_daily_cache_key_includes_target_dates(self) -> None:
+        city = next(item for item in CITY_CONFIGS if item.key == "SEA")
+        key_a = _hrrr_daily_cache_key(city, "20260309", 12, ["2026-03-08", "2026-03-09"])
+        key_b = _hrrr_daily_cache_key(city, "20260309", 12, ["2026-03-09", "2026-03-10"])
+        self.assertNotEqual(key_a, key_b)
+
+    def test_fetch_nws_daily_uses_stale_city_cache_on_failure(self) -> None:
+        city = next(item for item in CITY_CONFIGS if item.key == "SEA")
+        cached_payload = [
+            {
+                "model_name": "nws",
+                "date": "2026-03-09",
+                "high": 61.0,
+                "low": None,
+                "source": "weather.gov",
+            }
+        ]
+        with patch("paperbot.weather_models._request_json_with_retry", side_effect=RuntimeError("timeout")):
+            with patch(
+                "paperbot.weather_models._load_cached_response",
+                side_effect=lambda key, max_age_seconds: cached_payload if key == _cache_key_for_name(f"nws_daily/{city.key}") else None,
+            ):
+                rows = _fetch_nws_daily(city)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].model_name, "nws")
+        self.assertEqual(rows[0].date, "2026-03-09")
+        self.assertEqual(rows[0].high, 61.0)
+
+    def test_hrrr_subset_parser_prefers_inprocess_runtime(self) -> None:
+        city = next(item for item in CITY_CONFIGS if item.key == "SEA")
+        with patch("paperbot.weather_models._hrrr_inprocess_runtime_available", return_value=True):
+            with patch(
+                "paperbot.weather_models._run_hrrr_subset_parser_inprocess",
+                return_value=("2026-03-09T12:00:00+00:00", 58.0),
+            ) as inprocess:
+                result = _run_hrrr_subset_parser(Path("C:/tmp/fake.grib2"), city)
+        self.assertEqual(result, ("2026-03-09T12:00:00+00:00", 58.0))
+        inprocess.assert_called_once()
 
 
 if __name__ == "__main__":

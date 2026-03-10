@@ -1,9 +1,11 @@
 @echo off
 cd /d %~dp0
-call C:\Users\pe_hn\anaconda3\condabin\conda.bat activate weather-hrrr
+call C:\Users\pe_hn\anaconda3\condabin\conda.bat activate base
 if errorlevel 1 (
-    echo Falha ao ativar o ambiente weather-hrrr.
+    echo Falha ao ativar o ambiente base.
     exit /b 1
 )
-python run_weather_models.py --top 5
+set WEATHER_HRRR_CONDA_ENV=base
+set WEATHER_EXECUTE_TOP=0
+python run_weather_models.py --top 10 --show-blocked 10 --execute-top 0
 pause

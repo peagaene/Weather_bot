@@ -90,6 +90,38 @@ class PolicyAndDatesTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.reason, "allowed")
 
+    def test_policy_allows_isolated_nws_failure_when_other_core_support_is_strong(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "bucket": "80-81Ãƒâ€šÃ‚Â°F",
+                "consensus_score": 0.71,
+                "spread": 1.2,
+                "sigma": 1.8,
+                "ensemble_prediction": 80.6,
+                "confidence_tier": "safe",
+                "signal_tier": "B",
+                "edge": 22.0,
+                "min_agreeing_model_edge": 12.0,
+                "price_cents": 31.0,
+                "coverage_ok": False,
+                "coverage_score": 0.64,
+                "coverage_issue_type": "provider_failure",
+                "valid_model_count": 5,
+                "required_model_count": 5,
+                "agreement_models": 5,
+                "total_models": 5,
+                "provider_failures": ["nws"],
+                "degraded_reason": "provider_failures:nws",
+                "executable_quality_score": 0.75,
+                "data_quality_score": 0.74,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
+
 
 if __name__ == "__main__":
     unittest.main()

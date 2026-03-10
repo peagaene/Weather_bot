@@ -159,7 +159,7 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
         for item in str(
             os.getenv(
                 "WEATHER_POLICY_FALLBACK_TOLERATED_PROVIDER_FAILURES",
-                "best_match,ecmwf,gem,gfs,icon,jma,ecmwf_ens,gfs_ens,icon_ens,tomorrow,weatherapi,visualcrossing,openweather",
+                "best_match,ecmwf,gem,gfs,icon,jma,ecmwf_ens,gfs_ens,icon_ens,nws,tomorrow,weatherapi,visualcrossing,openweather",
             )
         ).split(",")
         if item.strip()

@@ -1,8 +1,8 @@
 @echo off
 cd /d %~dp0
-call C:\Users\pe_hn\anaconda3\condabin\conda.bat activate weather-hrrr
+call C:\Users\pe_hn\anaconda3\condabin\conda.bat activate base
 if errorlevel 1 (
-    echo Falha ao ativar o ambiente weather-hrrr.
+    echo Falha ao ativar o ambiente base.
     exit /b 1
 )
 rem Discovery mais ampla para gerar mais contexto, em modo observacao (sem envio de ordem).
@@ -14,7 +14,7 @@ set WEATHER_MIN_MODEL_PROB=12
 set WEATHER_MIN_CONSENSUS=0.25
 set WEATHER_MAX_MODEL_SPREAD=5
 set WEATHER_ENABLE_HRRR=1
-set WEATHER_HRRR_CONDA_ENV=weather-hrrr
+set WEATHER_HRRR_CONDA_ENV=base
 set PAPERBOT_BANKROLL_USD=18
 set WEATHER_AUTO_TRADE_ENABLED=1
 set WEATHER_ALLOW_UNAPPROVED_REPLAY_FOR_MICRO_LIVE=1

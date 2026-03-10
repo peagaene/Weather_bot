@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -18,6 +19,8 @@ from .weather_models import EnsembleForecast, fetch_city_ensembles
 POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_BASE_URL = os.getenv("POLYMARKET_CLOB_HOST", "https://clob.polymarket.com")
 MARKET_FEE = 0.02
+POLYMARKET_REQUEST_TIMEOUT_SECONDS = max(3.0, float(os.getenv("POLYMARKET_REQUEST_TIMEOUT_SECONDS", "8") or 8))
+POLYMARKET_PRICE_RETRY_ATTEMPTS = max(1, int(os.getenv("POLYMARKET_PRICE_RETRY_ATTEMPTS", "2") or 2))
 
 
 @dataclass
@@ -91,7 +94,7 @@ class MarketScan:
     buckets: list[MarketBucket]
 
 
-def _request_json(url: str, timeout: float = 20.0) -> Any:
+def _request_json(url: str, timeout: float = POLYMARKET_REQUEST_TIMEOUT_SECONDS) -> Any:
     request = urllib.request.Request(
         url=url,
         headers={
@@ -116,10 +119,20 @@ def _fetch_batch_prices(token_ids: list[str], side: str) -> dict[str, float | No
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=20.0) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except Exception:
+    last_error: Exception | None = None
+    data: Any = None
+    for attempt_idx in range(POLYMARKET_PRICE_RETRY_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=POLYMARKET_REQUEST_TIMEOUT_SECONDS) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt_idx >= POLYMARKET_PRICE_RETRY_ATTEMPTS - 1:
+                break
+            time.sleep(0.35 * (attempt_idx + 1))
+    if last_error is not None:
         return {token_id: None for token_id in token_ids}
 
     output: dict[str, float | None] = {}

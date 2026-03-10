@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 import os
 import re
 import subprocess
@@ -135,12 +136,14 @@ WEATHER_HRRR_TARGET_DAYS = max(1, int(os.getenv("WEATHER_HRRR_TARGET_DAYS", "2")
 WEATHER_HRRR_MAX_FORECAST_HOURS = max(6, int(os.getenv("WEATHER_HRRR_MAX_FORECAST_HOURS", "36") or 36))
 WEATHER_HRRR_REQUEST_TIMEOUT_SECONDS = max(20, int(os.getenv("WEATHER_HRRR_REQUEST_TIMEOUT_SECONDS", "90") or 90))
 WEATHER_HRRR_PARSE_TIMEOUT_SECONDS = max(20, int(os.getenv("WEATHER_HRRR_PARSE_TIMEOUT_SECONDS", "90") or 90))
-WEATHER_HRRR_CONDA_ENV = os.getenv("WEATHER_HRRR_CONDA_ENV", "weather-hrrr").strip() or "weather-hrrr"
+WEATHER_HRRR_CONDA_ENV = os.getenv("WEATHER_HRRR_CONDA_ENV", os.getenv("CONDA_DEFAULT_ENV", "base")).strip() or "base"
 WEATHER_HRRR_CONDA_BAT = os.getenv("WEATHER_HRRR_CONDA_BAT", "").strip()
 WEATHER_HRRR_RUNTIME_CHECK_TTL_SECONDS = max(
     300,
     int(os.getenv("WEATHER_HRRR_RUNTIME_CHECK_TTL_SECONDS", "21600") or 21600),
 )
+WEATHER_NWS_RETRY_ATTEMPTS = max(1, int(os.getenv("WEATHER_NWS_RETRY_ATTEMPTS", "3") or 3))
+WEATHER_NWS_RETRY_BACKOFF_SECONDS = max(0.1, float(os.getenv("WEATHER_NWS_RETRY_BACKOFF_SECONDS", "0.75") or 0.75))
 HRRR_RUNTIME_ERROR: str | None = None
 
 PROVIDER_COOLDOWNS: dict[str, float] = {}
@@ -220,6 +223,10 @@ def _write_cached_response(url: str, data: Any) -> None:
         cache_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     except Exception:
         return
+
+
+def _cache_key_for_name(name: str) -> str:
+    return f"cache://{name}"
 
 
 @lru_cache(maxsize=1)
@@ -341,7 +348,7 @@ def _compute_coverage_score(
     core_hits = sum(1 for name in core_names if name in predictions)
     core_target = 5 if horizon_days is None or horizon_days > 1 else 6
     core_support = min(1.0, core_hits / float(core_target))
-    failure_penalty = min(0.45, 0.06 * len(failures))
+    failure_penalty = min(0.45, sum(_provider_failure_penalty(name, horizon_days) for name in failures))
     score = (model_coverage * 0.5) + (core_support * 0.35) + (probabilistic_support * 0.15) - failure_penalty
     return round(max(0.0, min(1.0, score)), 4)
 
@@ -357,7 +364,10 @@ def _compute_data_quality_score(
     coverage_ok: bool,
 ) -> float:
     model_coverage_score = min(1.0, valid_model_count / max(float(min_models), 1.0))
-    failure_penalty = min(0.45, 0.08 * len(provider_failures or []))
+    failure_penalty = min(
+        0.45,
+        sum(_provider_failure_penalty(name, horizon_days, for_data_quality=True) for name in (provider_failures or [])),
+    )
     probabilistic_score = min(1.0, probabilistic_member_count / 40.0) if probabilistic_member_count > 0 else 0.0
     score = (model_coverage_score * 0.6) + (probabilistic_score * 0.2) + 0.2
     if horizon_days is not None and horizon_days <= 1:
@@ -465,6 +475,29 @@ def _clear_provider_cooldown(provider_name: str | None) -> None:
     PROVIDER_COOLDOWNS.pop(str(provider_name).strip().lower(), None)
 
 
+def _provider_failure_penalty(
+    provider_name: str,
+    horizon_days: int | None,
+    *,
+    for_data_quality: bool = False,
+) -> float:
+    name = str(provider_name or "").strip().lower()
+    if not name:
+        return 0.0
+    base_penalty = 0.08 if for_data_quality else 0.06
+    if name in {"tomorrow", "weatherapi", "visualcrossing", "openweather"}:
+        return base_penalty * 0.75
+    if name == "nws":
+        if horizon_days is not None and horizon_days <= 1:
+            return base_penalty * 0.7
+        return base_penalty * 0.85
+    if name == "hrrr":
+        return base_penalty * 1.05 if horizon_days is not None and horizon_days <= 1 else base_penalty * 0.9
+    if name == "mos":
+        return base_penalty * 1.0
+    return base_penalty
+
+
 def _request_json(
     url: str,
     *,
@@ -563,12 +596,69 @@ def _request_text(
         raise RuntimeError(f"Network error fetching {url}: {err}") from err
 
 
+def _request_json_with_retry(
+    url: str,
+    *,
+    provider_name: str,
+    attempts: int,
+    timeout: float = 20.0,
+    headers: dict[str, str] | None = None,
+) -> Any:
+    last_error: Exception | None = None
+    max_attempts = max(1, int(attempts))
+    for attempt_idx in range(max_attempts):
+        try:
+            return _request_json(url, timeout=timeout, headers=headers, provider_name=provider_name)
+        except Exception as exc:
+            last_error = exc
+            if attempt_idx >= max_attempts - 1:
+                break
+            time.sleep(WEATHER_NWS_RETRY_BACKOFF_SECONDS * (attempt_idx + 1))
+    assert last_error is not None
+    raise last_error
+
+
 def _summarize_provider_error(exc: Exception) -> str:
     text = str(exc or "").strip() or exc.__class__.__name__
     text = " ".join(text.split())
     if len(text) > 160:
         text = text[:157] + "..."
     return text
+
+
+def _serialize_model_forecasts(rows: list[ModelForecast]) -> list[dict[str, Any]]:
+    return [
+        {
+            "model_name": row.model_name,
+            "date": row.date,
+            "high": row.high,
+            "low": row.low,
+            "source": row.source,
+        }
+        for row in rows
+    ]
+
+
+def _restore_model_forecasts(payload: Any) -> list[ModelForecast]:
+    output: list[ModelForecast] = []
+    if not isinstance(payload, list):
+        return output
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            output.append(
+                ModelForecast(
+                    model_name=str(item.get("model_name") or ""),
+                    date=str(item["date"]),
+                    high=float(item["high"]),
+                    low=(float(item["low"]) if item.get("low") is not None else None),
+                    source=str(item.get("source") or ""),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return output
 
 
 def _coverage_issue_type(
@@ -769,6 +859,9 @@ def _fetch_mos_daily(city: CityConfig) -> list[ModelForecast]:
 def _hrrr_runtime_available() -> bool:
     global HRRR_RUNTIME_ERROR
     try:
+        if _hrrr_inprocess_runtime_available():
+            HRRR_RUNTIME_ERROR = None
+            return True
         conda_bat = _hrrr_conda_bat()
         if conda_bat is None or not conda_bat.exists():
             HRRR_RUNTIME_ERROR = "conda runtime not found"
@@ -806,6 +899,29 @@ def _hrrr_runtime_available() -> bool:
         return False
     except Exception as exc:
         HRRR_RUNTIME_ERROR = _summarize_provider_error(exc)
+        return False
+
+
+@lru_cache(maxsize=1)
+def _hrrr_inprocess_runtime_available() -> bool:
+    global HRRR_RUNTIME_ERROR
+    cache_key = f"hrrr_runtime_inprocess://{os.getenv('CONDA_DEFAULT_ENV', '') or 'python'}"
+    cached = _load_cached_response(cache_key, max_age_seconds=WEATHER_HRRR_RUNTIME_CHECK_TTL_SECONDS)
+    if isinstance(cached, dict):
+        cached_ok = bool(cached.get("ok"))
+        cached_error = str(cached.get("error") or "").strip() or None
+        HRRR_RUNTIME_ERROR = None if cached_ok else cached_error
+        return cached_ok
+    try:
+        importlib.import_module("eccodes")
+        importlib.import_module("cfgrib")
+        importlib.import_module("xarray")
+        HRRR_RUNTIME_ERROR = None
+        _write_cached_response(cache_key, {"ok": True, "error": None})
+        return True
+    except Exception as exc:
+        HRRR_RUNTIME_ERROR = _summarize_provider_error(exc)
+        _write_cached_response(cache_key, {"ok": False, "error": HRRR_RUNTIME_ERROR})
         return False
 
 
@@ -914,10 +1030,16 @@ def _hrrr_filter_url(city: CityConfig, date_token: str, cycle_hour: int, step_ho
     return f"https://nomads.ncep.noaa.gov/cgi-bin/filter_hrrr_2d.pl?{urllib.parse.urlencode(params)}"
 
 
-def _hrrr_daily_cache_key(city: CityConfig, date_token: str, cycle_hour: int, target_days: int) -> str:
+def _hrrr_daily_cache_key(
+    city: CityConfig,
+    date_token: str,
+    cycle_hour: int,
+    target_dates: list[str] | tuple[str, ...] | set[str],
+) -> str:
+    ordered_target_dates = ",".join(sorted(str(item) for item in target_dates))
     return (
         "hrrr_daily://"
-        f"{city.key}/{date_token}/t{cycle_hour:02d}/days={target_days}/"
+        f"{city.key}/{date_token}/t{cycle_hour:02d}/dates={ordered_target_dates}/"
         f"step={WEATHER_HRRR_STEP_HOURS}/extended={WEATHER_HRRR_EXTENDED_STEP_HOURS}"
     )
 
@@ -955,6 +1077,8 @@ def _hrrr_step_schedule(max_forecast_hours: int) -> list[int]:
 
 
 def _run_hrrr_subset_parser(grib_path: Path, city: CityConfig) -> tuple[str, float]:
+    if _hrrr_inprocess_runtime_available():
+        return _run_hrrr_subset_parser_inprocess(grib_path, city)
     conda_bat = _hrrr_conda_bat()
     if conda_bat is None:
         raise RuntimeError("conda runtime not found")
@@ -990,6 +1114,34 @@ def _run_hrrr_subset_parser(grib_path: Path, city: CityConfig) -> tuple[str, flo
     return valid, value
 
 
+def _run_hrrr_subset_parser_inprocess(grib_path: Path, city: CityConfig) -> tuple[str, float]:
+    xr = importlib.import_module("xarray")
+    ds = xr.open_dataset(str(grib_path), engine="cfgrib")
+    try:
+        var_name = next(iter(ds.data_vars))
+        arr = ds[var_name]
+        lat = ds["latitude"].values
+        lon = ds["longitude"].values
+        dist = (lat - float(city.lat)) ** 2 + (lon - float(city.lon)) ** 2
+        flat_idx = int(dist.reshape(-1).argmin())
+        value = float(arr.values.reshape(-1)[flat_idx])
+        if "valid_time" in ds.coords:
+            valid = str(ds["valid_time"].values.reshape(-1)[0])
+        elif "time" in ds.coords:
+            valid = str(ds.coords["time"].values)
+        else:
+            raise RuntimeError("HRRR dataset missing valid time coordinate")
+        units = str(arr.attrs.get("units") or arr.attrs.get("GRIB_units") or "")
+    finally:
+        try:
+            ds.close()
+        except Exception:
+            pass
+    if units.upper() == "K":
+        value = ((value - 273.15) * 9.0 / 5.0) + 32.0
+    return valid, value
+
+
 def _fetch_hrrr_daily(city: CityConfig) -> list[ModelForecast]:
     if not WEATHER_ENABLE_HRRR:
         return []
@@ -1000,7 +1152,7 @@ def _fetch_hrrr_daily(city: CityConfig) -> list[ModelForecast]:
         raise RuntimeError("HRRR cycle not found")
     date_token, cycle_hour = cycle
     target_dates = set(_hrrr_target_local_dates(city))
-    aggregate_cache_key = _hrrr_daily_cache_key(city, date_token, cycle_hour, len(target_dates))
+    aggregate_cache_key = _hrrr_daily_cache_key(city, date_token, cycle_hour, target_dates)
     hrrr_ttl, _ = _provider_cache_policy("hrrr")
     cached_daily = _load_cached_response(aggregate_cache_key, max_age_seconds=hrrr_ttl)
     if isinstance(cached_daily, list):
@@ -1047,7 +1199,13 @@ def _fetch_hrrr_daily(city: CityConfig) -> list[ModelForecast]:
                 raise RuntimeError(f"HTTP {err.code} fetching {url}") from err
             except urllib.error.URLError as err:
                 raise RuntimeError(f"Network error fetching {url}: {err}") from err
-            valid_text, temp_f = _run_hrrr_subset_parser(grib_path, city)
+            try:
+                valid_text, temp_f = _run_hrrr_subset_parser(grib_path, city)
+            finally:
+                try:
+                    grib_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
             _write_cached_response(url, {"valid": valid_text, "temp_f": temp_f})
         valid_dt = _parse_hrrr_valid_datetime(valid_text)
         local_date = valid_dt.astimezone(local_tz).date().isoformat()
@@ -1166,42 +1324,60 @@ def _fetch_open_meteo_ensemble_daily_highs(city: CityConfig, model_name: str, op
 
 
 def _fetch_nws_daily(city: CityConfig) -> list[ModelForecast]:
-    points_url = f"{WEATHER_GOV_BASE_URL}/points/{city.lat},{city.lon}"
-    points = _request_json(points_url, provider_name="weather_gov")
-    properties = points.get("properties") if isinstance(points, dict) else None
-    if not isinstance(properties, dict):
-        return []
-    forecast_url = properties.get("forecast")
-    if not forecast_url:
-        return []
+    daily_cache_key = _cache_key_for_name(f"nws_daily/{city.key}")
+    try:
+        points_url = f"{WEATHER_GOV_BASE_URL}/points/{city.lat},{city.lon}"
+        points = _request_json_with_retry(
+            points_url,
+            provider_name="weather_gov",
+            attempts=WEATHER_NWS_RETRY_ATTEMPTS,
+        )
+        properties = points.get("properties") if isinstance(points, dict) else None
+        if not isinstance(properties, dict):
+            return []
+        forecast_url = properties.get("forecast")
+        if not forecast_url:
+            return []
 
-    forecast = _request_json(str(forecast_url), provider_name="weather_gov")
-    periods = (((forecast or {}).get("properties") or {}).get("periods")) or []
-    by_date: dict[str, float] = {}
-    for period in periods:
-        if not isinstance(period, dict):
-            continue
-        if not period.get("isDaytime"):
-            continue
-        start = str(period.get("startTime") or "")
-        if not start:
-            continue
-        date = start[:10]
-        temperature = period.get("temperature")
-        if temperature is None:
-            continue
-        try:
-            temp_f = float(temperature)
-        except (TypeError, ValueError):
-            continue
-        current = by_date.get(date)
-        if current is None or temp_f > current:
-            by_date[date] = temp_f
-
-    return [
-        ModelForecast(model_name="nws", date=date, high=high, low=None, source="weather.gov")
-        for date, high in sorted(by_date.items())
-    ]
+        forecast = _request_json_with_retry(
+            str(forecast_url),
+            provider_name="weather_gov",
+            attempts=WEATHER_NWS_RETRY_ATTEMPTS,
+        )
+        periods = (((forecast or {}).get("properties") or {}).get("periods")) or []
+        by_date: dict[str, float] = {}
+        for period in periods:
+            if not isinstance(period, dict):
+                continue
+            if not period.get("isDaytime"):
+                continue
+            start = str(period.get("startTime") or "")
+            if not start:
+                continue
+            date = start[:10]
+            temperature = period.get("temperature")
+            if temperature is None:
+                continue
+            try:
+                temp_f = float(temperature)
+            except (TypeError, ValueError):
+                continue
+            current = by_date.get(date)
+            if current is None or temp_f > current:
+                by_date[date] = temp_f
+        rows = [
+            ModelForecast(model_name="nws", date=date, high=high, low=None, source="weather.gov")
+            for date, high in sorted(by_date.items())
+        ]
+        if rows:
+            _write_cached_response(daily_cache_key, _serialize_model_forecasts(rows))
+        return rows
+    except Exception:
+        _, max_stale_seconds = _provider_cache_policy("weather_gov")
+        stale_rows = _restore_model_forecasts(_load_cached_response(daily_cache_key, max_age_seconds=max_stale_seconds))
+        if stale_rows:
+            return stale_rows
+        raise
 
 
 def _fetch_tomorrow_daily(city: CityConfig) -> list[ModelForecast]:
