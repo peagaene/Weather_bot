@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 
@@ -12,6 +15,66 @@ class PolicyDecision:
     reason: str
     risk_label: str
     risk_score: float
+
+
+@lru_cache(maxsize=1)
+def _load_policy_profile() -> dict[str, Any]:
+    default_path = Path(__file__).resolve().parents[2] / "export" / "analysis" / "policy_profile.json"
+    raw_path = str(os.getenv("WEATHER_POLICY_PROFILE_PATH", str(default_path))).strip()
+    if not raw_path:
+        return {}
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = (Path(__file__).resolve().parents[2] / raw_path).resolve()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _profile_set(section: str) -> set[str]:
+    payload = _load_policy_profile()
+    values = payload.get(section)
+    if not isinstance(values, list):
+        return set()
+    return {str(item).strip() for item in values if str(item).strip()}
+
+
+def _env_csv_set(name: str, default: str = "") -> set[str]:
+    return {
+        item.strip()
+        for item in str(os.getenv(name, default)).split(",")
+        if item.strip()
+    }
+
+
+def _normalize_bucket_label(label: str) -> str:
+    text = (label or "").upper()
+    replacements = [
+        "ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°F",
+        "ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°F",
+        "ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°F",
+        "Ãƒâ€šÃ‚Â°F",
+        "Ã‚Â°F",
+        "Â°F",
+        "ÂºF",
+        "Ã‚ÂºF",
+        "Ãƒâ€šÃ‚ÂºF",
+    ]
+    for token in replacements:
+        text = text.replace(token, "F")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _canonical_bucket_key(label: str) -> str:
+    normalized = _normalize_bucket_label(label)
+    normalized = normalized.replace("°", " ").replace("º", " ")
+    normalized = re.sub(r"[^A-Z0-9]+", " ", normalized)
+    normalized = re.sub(r"\bF\b", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def parse_bucket_bounds(label: str) -> tuple[float | None, float | None]:
@@ -115,6 +178,10 @@ def compute_risk_label(opportunity: Any, range_info: dict | None = None) -> tupl
 
 def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     risk_label, risk_score = compute_risk_label(opportunity)
+    city_key = str(getattr(opportunity, "city_key", "") or "").strip().upper()
+    day_label = str(getattr(opportunity, "day_label", "") or "").strip().lower()
+    bucket_label = str(getattr(opportunity, "bucket", "") or "")
+    normalized_bucket = _canonical_bucket_key(bucket_label)
     confidence_tier = str(getattr(opportunity, "confidence_tier", "risky") or "risky").strip().lower()
     signal_tier = str(getattr(opportunity, "signal_tier", "C") or "C").strip().upper()
     edge = float(getattr(opportunity, "edge", 0.0) or 0.0)
@@ -150,6 +217,22 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     min_execution_quality = float(os.getenv("WEATHER_POLICY_MIN_EXECUTION_QUALITY", "0.2"))
     min_data_quality = float(os.getenv("WEATHER_POLICY_MIN_DATA_QUALITY", "0.3"))
     min_coverage_score = float(os.getenv("WEATHER_POLICY_MIN_COVERAGE_SCORE", "0.45"))
+    blocked_city_keys = {item.upper() for item in (_env_csv_set("WEATHER_POLICY_BLOCKED_CITY_KEYS", "MIA,NYC") | _profile_set("blocked_city_keys"))}
+    caution_city_keys = {item.upper() for item in (_env_csv_set("WEATHER_POLICY_CAUTION_CITY_KEYS", "DAL") | _profile_set("caution_city_keys"))}
+    caution_buckets = {_canonical_bucket_key(item) for item in _env_csv_set(
+        "WEATHER_POLICY_CAUTION_BUCKETS",
+        "64-65°F,82-83°F,66°F or higher,84-85°F",
+    )}
+    caution_buckets |= {_canonical_bucket_key(item) for item in _profile_set("caution_buckets")}
+    today_min_edge = float(os.getenv("WEATHER_POLICY_TODAY_MIN_EDGE", "18"))
+    today_min_consensus = float(os.getenv("WEATHER_POLICY_TODAY_MIN_CONSENSUS", "0.50"))
+    today_allowed_confidence = {
+        item.strip().lower()
+        for item in str(os.getenv("WEATHER_POLICY_TODAY_ALLOWED_CONFIDENCE", "safe,strong,lock")).split(",")
+        if item.strip()
+    }
+    caution_edge_penalty = float(os.getenv("WEATHER_POLICY_CAUTION_EDGE_PENALTY", "4"))
+    caution_consensus_penalty = float(os.getenv("WEATHER_POLICY_CAUTION_CONSENSUS_PENALTY", "0.05"))
     fallback_enabled = str(os.getenv("WEATHER_POLICY_ALLOW_FALLBACK_COVERAGE", "1")).strip().lower() not in {"0", "false", "no"}
     fallback_min_models = int(os.getenv("WEATHER_POLICY_FALLBACK_MIN_VALID_MODELS", "4") or 4)
     fallback_min_worst_case_edge = float(os.getenv("WEATHER_POLICY_FALLBACK_MIN_WORST_CASE_EDGE", "8") or 8)
@@ -178,6 +261,8 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     effective_coverage_ok = coverage_ok or coverage_score >= min_coverage_score or fallback_coverage_ok
     if not effective_coverage_ok:
         return PolicyDecision(False, "coverage_not_ok", risk_label, risk_score)
+    if city_key and city_key in blocked_city_keys:
+        return PolicyDecision(False, "city_blocked_historical_underperformance", risk_label, risk_score)
     if degraded_reason and degraded_reason != "degraded_clob_price" and not fallback_coverage_ok:
         return PolicyDecision(False, f"degraded:{degraded_reason}", risk_label, risk_score)
     effective_signal_tier = signal_tier
@@ -203,6 +288,26 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
         return PolicyDecision(False, "price_above_policy_max", risk_label, risk_score)
     if spread > policy_max_spread:
         return PolicyDecision(False, "spread_above_policy_max", risk_label, risk_score)
+    if day_label == "today":
+        if confidence_tier not in today_allowed_confidence:
+            return PolicyDecision(False, "today_requires_higher_confidence", risk_label, risk_score)
+        if edge < today_min_edge:
+            return PolicyDecision(False, "today_edge_too_low", risk_label, risk_score)
+        if consensus < today_min_consensus:
+            return PolicyDecision(False, "today_consensus_too_low", risk_label, risk_score)
+    caution_edge_floor = 0.0
+    caution_consensus_floor = 0.0
+    if city_key and city_key in caution_city_keys:
+        caution_edge_floor += caution_edge_penalty
+        caution_consensus_floor += caution_consensus_penalty
+    if normalized_bucket and normalized_bucket in caution_buckets:
+        caution_edge_floor += caution_edge_penalty
+        caution_consensus_floor += caution_consensus_penalty
+    if caution_edge_floor > 0:
+        if edge < max(policy_min_edge, policy_min_edge + caution_edge_floor):
+            return PolicyDecision(False, "historical_segment_edge_too_low", risk_label, risk_score)
+        if consensus < max(policy_min_consensus, policy_min_consensus + caution_consensus_floor):
+            return PolicyDecision(False, "historical_segment_consensus_too_low", risk_label, risk_score)
     if confidence_tier in {"lock", "strong", "safe"}:
         if edge < policy_min_edge:
             return PolicyDecision(False, "edge_below_policy_min", risk_label, risk_score)

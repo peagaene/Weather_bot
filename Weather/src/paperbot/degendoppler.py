@@ -38,15 +38,85 @@ class CityConfig:
     lat: float
     lon: float
     timezone_name: str
+    coastal: bool = False
+    marine_influenced: bool = False
+    urban_core: bool = False
+    regime_tags: tuple[str, ...] = ()
 
 
 CITY_CONFIGS: tuple[CityConfig, ...] = (
-    CityConfig("NYC", "New York City", "nyc", 40.76, -73.86, "America/New_York"),
-    CityConfig("CHI", "Chicago", "chicago", 41.98, -87.91, "America/Chicago"),
-    CityConfig("ATL", "Atlanta", "atlanta", 33.64, -84.41, "America/New_York"),
-    CityConfig("SEA", "Seattle", "seattle", 47.44, -122.30, "America/Los_Angeles"),
-    CityConfig("MIA", "Miami", "miami", 25.85, -80.24, "America/New_York"),
-    CityConfig("DAL", "Dallas", "dallas", 32.85, -96.87, "America/Chicago"),
+    CityConfig(
+        "NYC",
+        "New York City",
+        "nyc",
+        40.76,
+        -73.86,
+        "America/New_York",
+        coastal=True,
+        marine_influenced=True,
+        urban_core=True,
+        regime_tags=("coastal", "marine", "urban"),
+    ),
+    CityConfig(
+        "CHI",
+        "Chicago",
+        "chicago",
+        41.98,
+        -87.91,
+        "America/Chicago",
+        coastal=True,
+        marine_influenced=False,
+        urban_core=True,
+        regime_tags=("coastal_like_lake", "urban"),
+    ),
+    CityConfig(
+        "ATL",
+        "Atlanta",
+        "atlanta",
+        33.64,
+        -84.41,
+        "America/New_York",
+        coastal=False,
+        marine_influenced=False,
+        urban_core=True,
+        regime_tags=("inland", "urban"),
+    ),
+    CityConfig(
+        "SEA",
+        "Seattle",
+        "seattle",
+        47.44,
+        -122.30,
+        "America/Los_Angeles",
+        coastal=True,
+        marine_influenced=True,
+        urban_core=True,
+        regime_tags=("coastal", "marine", "urban"),
+    ),
+    CityConfig(
+        "MIA",
+        "Miami",
+        "miami",
+        25.85,
+        -80.24,
+        "America/New_York",
+        coastal=True,
+        marine_influenced=True,
+        urban_core=True,
+        regime_tags=("coastal", "marine", "urban"),
+    ),
+    CityConfig(
+        "DAL",
+        "Dallas",
+        "dallas",
+        32.85,
+        -96.87,
+        "America/Chicago",
+        coastal=False,
+        marine_influenced=False,
+        urban_core=True,
+        regime_tags=("inland", "urban"),
+    ),
 )
 
 

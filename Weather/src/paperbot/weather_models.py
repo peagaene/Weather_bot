@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib
+import math
 import os
 import re
 import subprocess
@@ -35,6 +36,10 @@ WEATHER_ENABLE_HRRR = os.getenv("WEATHER_ENABLE_HRRR", "0").strip().lower() in {
 WEATHER_CALIBRATION_PATH = os.getenv(
     "WEATHER_CALIBRATION_PATH",
     str(Path(__file__).resolve().parents[2] / "export" / "calibration" / "weather_model_calibration.json"),
+)
+WEATHER_SOURCE_WEIGHT_PROFILE_PATH = os.getenv(
+    "WEATHER_SOURCE_WEIGHT_PROFILE_PATH",
+    str(Path(__file__).resolve().parents[2] / "export" / "analysis" / "source_weight_profile.json"),
 )
 WEATHER_PROVIDER_CACHE_DIR = Path(
     os.getenv(
@@ -278,21 +283,109 @@ def _resolve_calibration(city_key: str, horizon_days: int | None) -> tuple[dict[
     return bias_map, weight_map
 
 
+@lru_cache(maxsize=1)
+def _load_source_weight_profile() -> dict[str, Any]:
+    path_value = os.getenv("WEATHER_SOURCE_WEIGHT_PROFILE_PATH", WEATHER_SOURCE_WEIGHT_PROFILE_PATH).strip()
+    if not path_value:
+        return {}
+    try:
+        with open(path_value, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _merge_weight_map(target: dict[str, float], source: dict[str, Any] | None) -> None:
+    if not isinstance(source, dict):
+        return
+    for model_name, raw_value in source.items():
+        try:
+            multiplier = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        target[str(model_name)] = float(target.get(str(model_name), 1.0)) * multiplier
+
+
+def _geometric_mean(values: list[float]) -> float:
+    clean = [max(0.0001, float(value)) for value in values if value is not None]
+    if not clean:
+        return 1.0
+    return math.exp(sum(math.log(value) for value in clean) / len(clean))
+
+
+def _resolve_source_weight_multipliers(city: CityConfig, horizon_days: int | None) -> dict[str, float]:
+    payload = _load_source_weight_profile()
+    if not payload:
+        return {}
+    output: dict[str, float] = {}
+
+    global_cfg = payload.get("global") if isinstance(payload, dict) else None
+    _merge_weight_map(output, (global_cfg or {}).get("model_weight_multiplier") if isinstance(global_cfg, dict) else None)
+
+    cities_cfg = payload.get("cities") if isinstance(payload, dict) else None
+    city_cfg = cities_cfg.get(city.key) if isinstance(cities_cfg, dict) else None
+    if isinstance(city_cfg, dict):
+        _merge_weight_map(output, city_cfg.get("model_weight_multiplier"))
+        horizon_cfg = city_cfg.get("horizon_days")
+        if isinstance(horizon_cfg, dict) and horizon_days is not None:
+            selected = horizon_cfg.get(str(horizon_days))
+            if isinstance(selected, dict):
+                _merge_weight_map(output, selected.get("model_weight_multiplier"))
+
+    regimes_cfg = payload.get("regimes") if isinstance(payload, dict) else None
+    if isinstance(regimes_cfg, dict) and city.regime_tags:
+        by_model: dict[str, list[float]] = {}
+        for regime_tag in city.regime_tags:
+            regime_cfg = regimes_cfg.get(str(regime_tag))
+            if not isinstance(regime_cfg, dict):
+                continue
+            regime_weights = regime_cfg.get("model_weight_multiplier")
+            if isinstance(regime_weights, dict):
+                for model_name, raw_value in regime_weights.items():
+                    try:
+                        by_model.setdefault(str(model_name), []).append(float(raw_value))
+                    except (TypeError, ValueError):
+                        continue
+            horizon_cfg = regime_cfg.get("horizon_days")
+            if isinstance(horizon_cfg, dict) and horizon_days is not None:
+                selected = horizon_cfg.get(str(horizon_days))
+                if isinstance(selected, dict):
+                    horizon_weights = selected.get("model_weight_multiplier")
+                    if isinstance(horizon_weights, dict):
+                        for model_name, raw_value in horizon_weights.items():
+                            try:
+                                by_model.setdefault(str(model_name), []).append(float(raw_value))
+                            except (TypeError, ValueError):
+                                continue
+        for model_name, values in by_model.items():
+            output[model_name] = float(output.get(model_name, 1.0)) * _geometric_mean(values)
+
+    return output
+
+
 def _apply_model_calibration(
-    city_key: str,
+    city: CityConfig,
     horizon_days: int | None,
     predictions: dict[str, float],
 ) -> tuple[dict[str, float], dict[str, float]]:
-    bias_map, weight_multiplier_map = _resolve_calibration(city_key, horizon_days)
+    bias_map, weight_multiplier_map = _resolve_calibration(city.key, horizon_days)
+    source_weight_multiplier_map = _resolve_source_weight_multipliers(city, horizon_days)
     adjusted_predictions: dict[str, float] = {}
     effective_weights: dict[str, float] = {}
     for model_name, value in predictions.items():
         adjusted_predictions[model_name] = float(value) + float(bias_map.get(model_name, 0.0))
         effective_weights[model_name] = max(
             0.05,
+            min(
+                2.0,
             float(MODEL_WEIGHTS.get(model_name, 1.0))
             * float(weight_multiplier_map.get(model_name, 1.0))
+            * float(source_weight_multiplier_map.get(model_name, 1.0))
             * _horizon_weight_multiplier(model_name, horizon_days),
+            ),
         )
     return adjusted_predictions, effective_weights
 
@@ -1608,7 +1701,7 @@ def build_ensemble_for_date(
     if not predictions:
         return None
 
-    calibrated_predictions, effective_weights = _apply_model_calibration(city.key, horizon_days, predictions)
+    calibrated_predictions, effective_weights = _apply_model_calibration(city, horizon_days, predictions)
     values = list(calibrated_predictions.values())
     deterministic_blended, deterministic_anchor, robust_scale = _robust_weighted_blend(
         calibrated_predictions,

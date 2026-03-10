@@ -5,6 +5,7 @@ import json
 import os
 import uuid
 import sys
+import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,9 @@ from paperbot.reconciliation import sync_open_positions, sync_prediction_resolut
 from paperbot.selection import explain_blocked_opportunities, filter_opportunities, summarize_filter_rejections
 from paperbot.storage import WeatherBotStorage
 from paperbot.trading_state import FileLock, TradingStateStore
+from paperbot.weather_models import _load_source_weight_profile
+from run_prediction_analysis import generate_prediction_analysis
+from run_source_weight_analysis import generate_source_weight_analysis
 
 load_app_env(ROOT)
 
@@ -31,6 +35,73 @@ def _resolve_path(value: str) -> Path:
     if path.is_absolute():
         return path
     return ROOT / path
+
+
+def _ensure_policy_profile_fresh() -> None:
+    enabled = str(os.getenv("WEATHER_POLICY_AUTO_REFRESH_PROFILE", "1")).strip().lower() not in {"0", "false", "no"}
+    if not enabled:
+        return
+    db_path = _resolve_path(os.getenv("WEATHER_DB_PATH", "export/db/weather_bot.db"))
+    if not db_path.exists():
+        return
+    analysis_path = _resolve_path(os.getenv("WEATHER_PREDICTION_ANALYSIS_PATH", "export/analysis/prediction_analysis.json"))
+    profile_path = _resolve_path(os.getenv("WEATHER_POLICY_PROFILE_PATH", "export/analysis/policy_profile.json"))
+    max_age_hours = max(1.0, float(os.getenv("WEATHER_POLICY_PROFILE_MAX_AGE_HOURS", "24") or 24))
+    max_age_seconds = max_age_hours * 3600.0
+    min_samples = max(1, int(os.getenv("WEATHER_POLICY_PROFILE_MIN_SAMPLES", "25") or 25))
+    top_segments = max(1, int(os.getenv("WEATHER_POLICY_PROFILE_TOP_SEGMENTS", "10") or 10))
+    now = time.time()
+    if profile_path.exists():
+        age_seconds = max(0.0, now - profile_path.stat().st_mtime)
+        if age_seconds <= max_age_seconds:
+            return
+    try:
+        generate_prediction_analysis(
+            db_path=db_path,
+            min_samples=min_samples,
+            top_segments=top_segments,
+            output_json=analysis_path,
+            policy_profile_json=profile_path,
+        )
+        print(f"policy profile atualizado: {profile_path}")
+    except Exception as exc:
+        print(f"AVISO: falha ao atualizar policy profile: {_sanitize_text(exc)}")
+
+
+def _ensure_source_weight_profile_fresh() -> None:
+    enabled = str(os.getenv("WEATHER_SOURCE_WEIGHT_AUTO_REFRESH", "1")).strip().lower() not in {"0", "false", "no"}
+    if not enabled:
+        return
+    db_path = _resolve_path(os.getenv("WEATHER_DB_PATH", "export/db/weather_bot.db"))
+    if not db_path.exists():
+        return
+    analysis_path = _resolve_path(
+        os.getenv("WEATHER_SOURCE_WEIGHT_ANALYSIS_PATH", "export/analysis/source_weight_analysis.json")
+    )
+    profile_path = _resolve_path(
+        os.getenv("WEATHER_SOURCE_WEIGHT_PROFILE_PATH", "export/analysis/source_weight_profile.json")
+    )
+    max_age_hours = max(1.0, float(os.getenv("WEATHER_SOURCE_WEIGHT_PROFILE_MAX_AGE_HOURS", "24") or 24))
+    max_age_seconds = max_age_hours * 3600.0
+    min_samples = max(1, int(os.getenv("WEATHER_SOURCE_WEIGHT_MIN_SAMPLES", "50") or 50))
+    top_segments = max(1, int(os.getenv("WEATHER_SOURCE_WEIGHT_TOP_SEGMENTS", "10") or 10))
+    now = time.time()
+    if profile_path.exists():
+        age_seconds = max(0.0, now - profile_path.stat().st_mtime)
+        if age_seconds <= max_age_seconds:
+            return
+    try:
+        generate_source_weight_analysis(
+            db_path=db_path,
+            min_samples=min_samples,
+            top_segments=top_segments,
+            output_json=analysis_path,
+            profile_json=profile_path,
+        )
+        _load_source_weight_profile.cache_clear()
+        print(f"source weight profile atualizado: {profile_path}")
+    except Exception as exc:
+        print(f"AVISO: falha ao atualizar source weight profile: {_sanitize_text(exc)}")
 
 
 def _build_history_rows(run_id: str, selected: list, plans: list, executions: list, generated_at: str) -> list[dict]:
@@ -204,6 +275,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--export-csv", default=None)
     parser.add_argument("--safe-share", action="store_true", help="Redact market URLs, token ids and operational fields from stdout/JSON exports.")
     args = parser.parse_args(argv)
+    _ensure_policy_profile_fresh()
+    _ensure_source_weight_profile_fresh()
 
     if args.live and args.no_history:
         parser.error("--live requires persistent history/storage; remove --no-history.")
