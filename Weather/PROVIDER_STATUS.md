@@ -1,30 +1,30 @@
 # Provider Status
 
-Documento auxiliar. O plano principal agora está em [MASTER_ROADMAP.md](C:/Bot_poly/Weather/MASTER_ROADMAP.md).
+Documento auxiliar. O plano principal continua em [MASTER_ROADMAP.md](C:/Bot_poly/Weather/MASTER_ROADMAP.md).
 
 ## Como ler
-- `Funcionando`: já existe no código e participa do pipeline atual
-- `Implementado, validar`: já existe no código, mas depende de chave/configuração/runtime
-- `Implementado, observação`: já existe no código, mas hoje está sendo usado só para observação/truth
-- `Ainda não implementado`: ainda não entrou no código
+- `Funcionando`: existe no codigo e participa do pipeline atual
+- `Implementado, validar`: existe no codigo, mas ainda precisa de validacao operacional completa
+- `Implementado, observacao`: existe no codigo, mas hoje fica em observacao/truth
+- `Ainda nao implementado`: ainda nao entrou no codigo
 
 ## O que aparece na imagem
 
 ### APIs / fontes que aparecem na imagem
-| Fonte | Nome na imagem | Status no bot | Observação |
+| Fonte | Nome na imagem | Status no bot | Observacao |
 |---|---|---|---|
-| Tomorrow.io | `Tomorrow.io` | Implementado, validar | Depende de `TOMORROW_API_KEY` |
+| Tomorrow.io | `Tomorrow.io` | Implementado, validar | Key ok; unidade corrigida; precisa re-baseline no banco |
 | NOAA / NWS API | `NWS` | Funcionando | EUA |
 | Open-Meteo | `Open-Meteo` | Funcionando | Base global principal |
-| OpenWeather | `OpenWeather` | Implementado, validar | Depende de `OPENWEATHER_API_KEY` |
-| WeatherAPI | `WeatherAPI` | Implementado, validar | Depende de `WEATHERAPI_KEY` |
-| Visual Crossing | `VisCross` | Implementado, validar | Depende de `VISUAL_CROSSING_API_KEY` |
-| Pirate Weather | `PirateWx` | Ainda não implementado | Equivale a `Pirate Weather` da sua lista |
+| OpenWeather | `OpenWeather` | Implementado, validar | Key ok; request real validado |
+| WeatherAPI | `WeatherAPI` | Implementado, validar | Key ok; request real validado |
+| Visual Crossing | `VisCross` | Implementado, validar | Key ok; request real validado |
+| Pirate Weather | `PirateWx` | Implementado, validar | Key ok; request real validado |
 
 ### Modelos que aparecem na imagem
-Esses aparecem na imagem, mas não são APIs separadas no nosso desenho atual.
+Esses aparecem na imagem, mas nao sao APIs separadas no desenho atual.
 
-| Modelo | Status no bot | Observação |
+| Modelo | Status no bot | Observacao |
 |---|---|---|
 | GFS | Funcionando | Via Open-Meteo |
 | ECMWF | Funcionando | Via Open-Meteo |
@@ -35,67 +35,67 @@ Esses aparecem na imagem, mas não são APIs separadas no nosso desenho atual.
 
 ## Lista completa baseada na sua lista
 
-### APIs meteorológicas globais / comerciais
-| Fonte | Status no bot | Observação |
+### APIs meteorologicas globais / comerciais
+| Fonte | Status no bot | Observacao |
 |---|---|---|
 | Open-Meteo | Funcionando | Forecast global |
-| OpenWeather | Implementado, validar | Forecast/current com key |
-| WeatherAPI | Implementado, validar | Forecast/current com key |
-| Weatherbit | Implementado, validar | Forecast/current com key |
-| Meteosource | Implementado, validar | Forecast com key |
-| Visual Crossing | Implementado, validar | Forecast/history com key |
-| Weatherstack | Ainda não implementado | Não priorizado ainda |
-| Tomorrow.io | Implementado, validar | Forecast/current com key |
-| meteoblue | Ainda não implementado | Planejado |
-| AccuWeather | Ainda não implementado | Não priorizado ainda |
-| The Weather Company | Ainda não implementado | Não priorizado ainda |
-| Meteomatics | Ainda não implementado | Não priorizado ainda |
-| Xweather | Ainda não implementado | Não priorizado ainda |
+| OpenWeather | Implementado, validar | Key ok; request real validado |
+| WeatherAPI | Implementado, validar | Key ok; request real validado |
+| Weatherbit | Implementado, validar | Key em provisioning; `403` temporario |
+| Meteosource | Implementado, validar | Key ok; request real validado |
+| Visual Crossing | Implementado, validar | Key ok; request real validado |
+| Weatherstack | Implementado, validar | Key ok; plano atual nao suporta forecast |
+| Tomorrow.io | Implementado, validar | Key ok; unidade corrigida; precisa re-baseline |
+| meteoblue | Implementado, validar | Key ok; request real validado |
+| AccuWeather | Implementado, validar | Key ok; request real validado |
+| The Weather Company | Ainda nao implementado | Nao priorizado ainda |
+| Meteomatics | Ainda nao implementado | Nao priorizado ainda |
+| Xweather | Ainda nao implementado | Nao priorizado ainda |
 
-### APIs focadas em observações / estações
-| Fonte | Status no bot | Observação |
+### APIs focadas em observacoes / estacoes
+| Fonte | Status no bot | Observacao |
 |---|---|---|
-| Xweather Observations | Ainda não implementado | Não priorizado ainda |
-| The Weather Company Observations | Ainda não implementado | Não priorizado ainda |
+| Xweather Observations | Ainda nao implementado | Nao priorizado ainda |
+| The Weather Company Observations | Ainda nao implementado | Nao priorizado ainda |
 | Weatherbit Current Weather | Implementado, validar | Entrou junto com Weatherbit |
-| Meteostat | Implementado, observação | Truth internacional, recém integrado |
-| OpenWeather Current / One Call | Implementado, validar | Já entra pelo provider OpenWeather |
+| Meteostat | Implementado, observacao | Truth internacional |
+| OpenWeather Current / One Call | Implementado, validar | Ja entra pelo provider OpenWeather |
 
-### Redes de estações pessoais / IoT
-| Fonte | Status no bot | Observação |
+### Redes de estacoes pessoais / IoT
+| Fonte | Status no bot | Observacao |
 |---|---|---|
-| Netatmo Weather API | Ainda não implementado | Não priorizado |
-| Tempest API | Ainda não implementado | Não priorizado |
-| Ambient Weather API | Ainda não implementado | Não priorizado |
+| Netatmo Weather API | Ainda nao implementado | Nao priorizado |
+| Tempest API | Ainda nao implementado | Nao priorizado |
+| Ambient Weather API | Ainda nao implementado | Nao priorizado |
 
-### APIs oficiais / serviços meteorológicos nacionais
-| Fonte | Status no bot | Observação |
+### APIs oficiais / servicos meteorologicos nacionais
+| Fonte | Status no bot | Observacao |
 |---|---|---|
-| NOAA / NWS API | Funcionando | Forecast + observação EUA |
-| NOAA ISD | Implementado, observação | Truth global fail-open para cidades internacionais |
-| NOAA Climate Data Online (CDO) | Ainda não implementado | Bom para histórico/backfill |
+| NOAA / NWS API | Funcionando | Forecast + observacao EUA |
+| NOAA ISD | Implementado, observacao | Truth global fail-open para cidades internacionais |
+| NOAA Climate Data Online (CDO) | Ainda nao implementado | Bom para historico/backfill |
 | MET Norway API | Implementado, validar | Forecast global sem key |
-| FMI Open Data | Ainda não implementado | Não priorizado ainda |
-| DWD Open Data | Ainda não implementado | Pode ser coberto por Bright Sky depois |
-| Met Office DataHub | Ainda não implementado | Não priorizado ainda |
-| Bureau of Meteorology (BOM) | Ainda não implementado | Não priorizado ainda |
-| Japan Weather Association Weather API | Ainda não implementado | Não priorizado ainda |
+| FMI Open Data | Ainda nao implementado | Nao priorizado ainda |
+| DWD Open Data | Ainda nao implementado | Pode ser coberto por Bright Sky depois |
+| Met Office DataHub | Ainda nao implementado | Nao priorizado ainda |
+| Bureau of Meteorology (BOM) | Ainda nao implementado | Nao priorizado ainda |
+| Japan Weather Association Weather API | Ainda nao implementado | Nao priorizado ainda |
 
-### APIs e serviços de dados climáticos / reanálise / ciência
-| Fonte | Status no bot | Observação |
+### APIs e servicos de dados climaticos / reanalise / ciencia
+| Fonte | Status no bot | Observacao |
 |---|---|---|
-| NASA POWER | Ainda não implementado | Baixa prioridade para intraday |
-| ECMWF Web API / Open Data | Ainda não implementado | Hoje usamos ECMWF via Open-Meteo |
+| NASA POWER | Ainda nao implementado | Baixa prioridade para intraday |
+| ECMWF Web API / Open Data | Ainda nao implementado | Hoje usamos ECMWF via Open-Meteo |
 
 ### Camadas simplificadas / wrappers sobre dados oficiais
-| Fonte | Status no bot | Observação |
+| Fonte | Status no bot | Observacao |
 |---|---|---|
-| Bright Sky | Ainda não implementado | Planejado, útil para Munique/Alemanha |
-| Pirate Weather | Ainda não implementado | Equivale ao `PirateWx` da imagem |
+| Bright Sky | Implementado, validar | Restrito a Munique/Alemanha por enquanto |
+| Pirate Weather | Implementado, validar | Equivale ao `PirateWx` da imagem |
 
-## Resposta objetiva à sua pergunta
+## Resposta objetiva a pergunta da imagem
 
-### O que aparece na imagem e não estava listado como nome exato de API
+### O que aparece na imagem e nao estava listado como nome exato de API
 - `GFS`
 - `ECMWF`
 - `ICON`
@@ -103,27 +103,21 @@ Esses aparecem na imagem, mas não são APIs separadas no nosso desenho atual.
 - `GEM`
 - `HRRR`
 
-Esses são modelos, não APIs comerciais separadas na forma como você listou.
+Esses sao modelos, nao APIs comerciais separadas.
 
-### O que estava na sua lista e aparece na imagem com nome diferente
+### O que aparece na imagem com nome diferente
 - `Visual Crossing` -> `VisCross`
 - `Pirate Weather` -> `PirateWx`
 - `NOAA / NWS API` -> `NWS`
 
-## Próximos a adicionar
-1. Meteostat
-   - já integrado
-   - falta validação em ambiente com dependência instalada
-2. NOAA ISD
-   - já integrado
-   - falta validação com dados reais por cidade
-3. Weatherbit
-   - já integrado
-   - depende de `WEATHERBIT_API_KEY`
-4. Meteosource
-   - já integrado
-   - depende de `METEOSOURCE_API_KEY`
-5. MET Norway
-   - já integrado
-   - falta validação com dados reais por cidade
-6. Bright Sky
+## Proximos a adicionar
+1. Meteomatics
+2. Xweather
+3. The Weather Company
+4. FMI
+5. DWD
+6. Met Office
+7. BOM
+8. JWA
+9. NASA POWER
+10. ECMWF Open Data

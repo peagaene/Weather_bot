@@ -48,12 +48,6 @@ def effective_price_bounds(
     tomorrow_price_override_max = float(
         os.getenv("WEATHER_POLICY_TOMORROW_MAX_PRICE_CENTS", str(max_price_cents))
     )
-    sea_specific_override_enabled = str(
-        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_ENABLED", "1")
-    ).strip().lower() not in {"0", "false", "no"}
-    sea_specific_override_max = float(
-        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_MAX_PRICE_CENTS", str(tomorrow_price_override_max))
-    )
     effective_max_price = max_price_cents
     if (
         tomorrow_price_override_enabled
@@ -62,20 +56,6 @@ def effective_price_bounds(
         and signal_tier in tomorrow_price_override_signal_tiers
     ):
         effective_max_price = max(max_price_cents, tomorrow_price_override_max)
-    if (
-        sea_specific_override_enabled
-        and city_key == "SEA"
-        and day_label == "tomorrow"
-        and side == "NO"
-        and confidence_tier == "safe"
-        and signal_tier == "B"
-        and agreement_pct >= 80.0
-        and model_prob >= 88.0
-        and float(getattr(opportunity, "edge", 0.0) or 0.0) >= 20.0
-        and float(getattr(opportunity, "min_agreeing_model_edge", 0.0) or 0.0) >= 15.0
-        and float(getattr(opportunity, "consensus_score", 0.0) or 0.0) >= 0.75
-    ):
-        effective_max_price = max(effective_max_price, sea_specific_override_max)
     return min_price_cents, effective_max_price
 
 
@@ -243,7 +223,54 @@ def compute_risk_label(opportunity: Any, range_info: dict | None = None) -> tupl
     return "Safe", risk_points
 
 
+def _baseline_thresholds(confidence_tier: str, policy_min_edge: float, policy_min_consensus: float) -> tuple[float, float]:
+    if confidence_tier in {"lock", "strong", "safe"}:
+        return policy_min_edge, policy_min_consensus
+    if confidence_tier == "near-safe":
+        return (
+            float(os.getenv("WEATHER_POLICY_NEAR_SAFE_MIN_EDGE", "18")),
+            float(os.getenv("WEATHER_POLICY_NEAR_SAFE_MIN_CONSENSUS", "0.5")),
+        )
+    return float("inf"), float("inf")
+
+
+def _signal_adjustments(signal_tier: str) -> tuple[float, float]:
+    if signal_tier in {"A+", "A"}:
+        return 0.0, 0.0
+    if signal_tier == "B":
+        return 1.0, 0.02
+    if signal_tier == "C":
+        return 4.0, 0.08
+    return 6.0, 0.12
+
+
+def _risk_adjustments(risk_label: str) -> tuple[float, float]:
+    if risk_label == "Safe":
+        return 0.0, 0.0
+    if risk_label == "Moderate":
+        return 2.0, 0.05
+    if risk_label == "Risky":
+        return 6.0, 0.12
+    return 0.0, 0.0
+
+
+def _degraded_parts(degraded_reason: str) -> list[str]:
+    return [item.strip() for item in str(degraded_reason or "").split(";") if item.strip()]
+
+
+def _provider_failure_set_from_degraded(degraded_reason: str) -> set[str]:
+    output: set[str] = set()
+    for item in _degraded_parts(degraded_reason):
+        if not item.startswith("provider_failures:"):
+            continue
+        _, _, raw_failures = item.partition(":")
+        output |= {part.strip().lower() for part in raw_failures.split(",") if part.strip()}
+    return output
+
+
 def apply_trade_policy(opportunity: Any) -> PolicyDecision:
+    # Execution is setup-driven, not city-driven. City/history only adjusts thresholds
+    # or enables explicit observation-only mode when configured.
     risk_label, risk_score = compute_risk_label(opportunity)
     city_key = str(getattr(opportunity, "city_key", "") or "").strip().upper()
     day_label = str(getattr(opportunity, "day_label", "") or "").strip().lower()
@@ -269,12 +296,6 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     total_models = int(getattr(opportunity, "total_models", 0) or 0)
     agreement_pct = float(getattr(opportunity, "agreement_pct", 0.0) or 0.0)
     provider_failures = {str(item).strip().lower() for item in (getattr(opportunity, "provider_failures", None) or []) if str(item).strip()}
-    allowed_signal_tiers = {
-        item.strip().upper()
-        for item in str(os.getenv("WEATHER_POLICY_ALLOWED_SIGNAL_TIERS", "A+,A,B,C")).split(",")
-        if item.strip()
-    }
-
     policy_min_edge = float(os.getenv("WEATHER_POLICY_MIN_EDGE", "10"))
     policy_min_consensus = float(os.getenv("WEATHER_POLICY_MIN_CONSENSUS", "0.42"))
     policy_min_price = float(os.getenv("WEATHER_POLICY_MIN_PRICE_CENTS", os.getenv("WEATHER_MIN_PRICE_CENTS", "10")))
@@ -285,8 +306,6 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
         max_price_cents=policy_max_price,
     )
     policy_max_spread = float(os.getenv("WEATHER_POLICY_MAX_SPREAD", os.getenv("WEATHER_MAX_MODEL_SPREAD", "4.0")))
-    near_safe_min_edge = float(os.getenv("WEATHER_POLICY_NEAR_SAFE_MIN_EDGE", "18"))
-    near_safe_min_consensus = float(os.getenv("WEATHER_POLICY_NEAR_SAFE_MIN_CONSENSUS", "0.5"))
     min_worst_case_edge = float(os.getenv("WEATHER_POLICY_MIN_WORST_CASE_EDGE", "4"))
     min_execution_quality = float(os.getenv("WEATHER_POLICY_MIN_EXECUTION_QUALITY", "0.2"))
     min_data_quality = float(os.getenv("WEATHER_POLICY_MIN_DATA_QUALITY", "0.3"))
@@ -309,99 +328,26 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     }
     caution_edge_penalty = float(os.getenv("WEATHER_POLICY_CAUTION_EDGE_PENALTY", "4"))
     caution_consensus_penalty = float(os.getenv("WEATHER_POLICY_CAUTION_CONSENSUS_PENALTY", "0.05"))
-    tomorrow_risky_override_enabled = str(
-        os.getenv("WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_ENABLED", "1")
-    ).strip().lower() not in {"0", "false", "no"}
-    tomorrow_risky_override_signal_tiers = {
-        item.strip().upper()
-        for item in str(os.getenv("WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_SIGNAL_TIERS", "B")).split(",")
-        if item.strip()
-    }
-    tomorrow_risky_override_confidence = {
-        item.strip().lower()
-        for item in str(os.getenv("WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_CONFIDENCE", "safe,near-safe")).split(",")
-        if item.strip()
-    }
-    tomorrow_risky_override_min_agreement_pct = float(
-        os.getenv("WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_MIN_AGREEMENT_PCT", "75")
-    )
-    tomorrow_risky_override_min_edge = float(
-        os.getenv("WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_MIN_EDGE", "18")
-    )
-    tomorrow_risky_override_min_worst_case_edge = float(
-        os.getenv("WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_MIN_WORST_CASE_EDGE", "12")
-    )
-    tomorrow_risky_override_min_consensus = float(
-        os.getenv("WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_MIN_CONSENSUS", "0.68")
-    )
-    strong_city_risky_override_enabled = str(
-        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_ENABLED", "1")
-    ).strip().lower() not in {"0", "false", "no"}
-    strong_city_risky_override_cities = {
-        item.strip().upper()
-        for item in str(os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_CITIES", "SEA")).split(",")
-        if item.strip()
-    }
-    strong_city_risky_override_signal_tiers = {
-        item.strip().upper()
-        for item in str(os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_SIGNAL_TIERS", "B")).split(",")
-        if item.strip()
-    }
-    strong_city_risky_override_confidence = {
-        item.strip().lower()
-        for item in str(os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_CONFIDENCE", "safe")).split(",")
-        if item.strip()
-    }
-    strong_city_risky_override_min_agreement_pct = float(
-        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_MIN_AGREEMENT_PCT", "80")
-    )
-    strong_city_risky_override_min_edge = float(
-        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_MIN_EDGE", "20")
-    )
-    strong_city_risky_override_min_worst_case_edge = float(
-        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_MIN_WORST_CASE_EDGE", "15")
-    )
-    strong_city_risky_override_min_consensus = float(
-        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_MIN_CONSENSUS", "0.75")
-    )
-    sea_tomorrow_no_override_enabled = str(
-        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_ENABLED", "1")
-    ).strip().lower() not in {"0", "false", "no"}
-    sea_tomorrow_no_override_min_agreement_pct = float(
-        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_AGREEMENT_PCT", "80")
-    )
-    sea_tomorrow_no_override_min_edge = float(
-        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_EDGE", "20")
-    )
-    sea_tomorrow_no_override_min_model_prob = float(
-        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_MODEL_PROB", "88")
-    )
-    sea_tomorrow_no_override_min_worst_case_edge = float(
-        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_WORST_CASE_EDGE", "15")
-    )
-    sea_tomorrow_no_override_min_consensus = float(
-        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_CONSENSUS", "0.75")
-    )
-    general_risky_override_enabled = str(
+    exceptional_risky_override_enabled = str(
         os.getenv("WEATHER_POLICY_GENERAL_RISKY_OVERRIDE_ENABLED", "1")
     ).strip().lower() not in {"0", "false", "no"}
-    general_risky_override_confidence = {
+    exceptional_risky_override_confidence = {
         item.strip().lower()
         for item in str(os.getenv("WEATHER_POLICY_GENERAL_RISKY_OVERRIDE_CONFIDENCE", "safe,strong,lock")).split(",")
         if item.strip()
     }
-    general_risky_override_signal_tiers = {
+    exceptional_risky_override_signal_tiers = {
         item.strip().upper()
-        for item in str(os.getenv("WEATHER_POLICY_GENERAL_RISKY_OVERRIDE_SIGNAL_TIERS", "A+,A,B,C")).split(",")
+        for item in str(os.getenv("WEATHER_POLICY_GENERAL_RISKY_OVERRIDE_SIGNAL_TIERS", "A+,A,B")).split(",")
         if item.strip()
     }
-    general_risky_override_min_agreement_pct = float(
+    exceptional_risky_override_min_agreement_pct = float(
         os.getenv("WEATHER_POLICY_GENERAL_RISKY_OVERRIDE_MIN_AGREEMENT_PCT", "80")
     )
-    general_risky_override_min_edge = float(
+    exceptional_risky_override_min_edge = float(
         os.getenv("WEATHER_POLICY_GENERAL_RISKY_OVERRIDE_MIN_EDGE", "20")
     )
-    general_risky_override_min_consensus = float(
+    exceptional_risky_override_min_consensus = float(
         os.getenv("WEATHER_POLICY_GENERAL_RISKY_OVERRIDE_MIN_CONSENSUS", "0.55")
     )
     fallback_enabled = str(os.getenv("WEATHER_POLICY_ALLOW_FALLBACK_COVERAGE", "1")).strip().lower() not in {"0", "false", "no"}
@@ -418,62 +364,53 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
         ).split(",")
         if item.strip()
     }
+    tolerated_degraded_provider_failures = {
+        item.strip().lower()
+        for item in str(
+            os.getenv(
+                "WEATHER_POLICY_TOLERATED_DEGRADED_PROVIDER_FAILURES",
+                "ecmwf_ens,gfs_ens,icon_ens,weatherbit,meteosource,meteostat,noaa_isd,brightsky",
+            )
+        ).split(",")
+        if item.strip()
+    }
 
     fallback_coverage_ok = (
         fallback_enabled
         and coverage_issue_type in {"provider_failure", "mixed", "rate_limited", "mixed_rate_limited"}
-        and valid_model_count >= fallback_min_models
-        and total_models == valid_model_count
+        and valid_model_count >= max(fallback_min_models, required_model_count or 0)
         and min_agreeing_model_edge >= fallback_min_worst_case_edge
         and executable_quality_score >= fallback_min_execution_quality
         and provider_failures.issubset(tolerated_failures)
+    )
+    degraded_failure_names = _provider_failure_set_from_degraded(degraded_reason)
+    degraded_parts = _degraded_parts(degraded_reason)
+    degraded_has_non_provider_failure = any(
+        not item.startswith("provider_failures:")
+        for item in degraded_parts
+    )
+    tolerated_provider_degradation = (
+        bool(degraded_failure_names)
+        and not degraded_has_non_provider_failure
+        and degraded_failure_names.issubset(tolerated_failures | tolerated_degraded_provider_failures)
+        and valid_model_count >= max(4, fallback_min_models)
+        and coverage_score >= max(min_coverage_score, 0.58)
+        and data_quality_score >= max(min_data_quality, 0.4)
+        and executable_quality_score >= max(min_execution_quality, 0.35)
     )
 
     effective_coverage_ok = coverage_ok or coverage_score >= min_coverage_score or fallback_coverage_ok
     effective_agreement_pct = agreement_pct
     if effective_agreement_pct <= 0.0 and total_models > 0 and agreement_models > 0:
         effective_agreement_pct = (agreement_models / total_models) * 100.0
-    tomorrow_risky_override = (
-        tomorrow_risky_override_enabled
-        and day_label == "tomorrow"
-        and confidence_tier in tomorrow_risky_override_confidence
-        and signal_tier in tomorrow_risky_override_signal_tiers
-        and effective_agreement_pct >= tomorrow_risky_override_min_agreement_pct
-        and edge >= tomorrow_risky_override_min_edge
-        and min_agreeing_model_edge >= tomorrow_risky_override_min_worst_case_edge
-        and consensus >= tomorrow_risky_override_min_consensus
-    )
-    strong_city_risky_override = (
-        strong_city_risky_override_enabled
-        and city_key in strong_city_risky_override_cities
-        and day_label == "tomorrow"
-        and confidence_tier in strong_city_risky_override_confidence
-        and signal_tier in strong_city_risky_override_signal_tiers
-        and effective_agreement_pct >= strong_city_risky_override_min_agreement_pct
-        and edge >= strong_city_risky_override_min_edge
-        and min_agreeing_model_edge >= strong_city_risky_override_min_worst_case_edge
-        and consensus >= strong_city_risky_override_min_consensus
-    )
-    sea_tomorrow_no_override = (
-        sea_tomorrow_no_override_enabled
-        and city_key == "SEA"
-        and day_label == "tomorrow"
-        and side == "NO"
-        and confidence_tier == "safe"
-        and signal_tier == "B"
-        and effective_agreement_pct >= sea_tomorrow_no_override_min_agreement_pct
-        and edge >= sea_tomorrow_no_override_min_edge
-        and float(getattr(opportunity, "model_prob", 0.0) or 0.0) >= sea_tomorrow_no_override_min_model_prob
-        and min_agreeing_model_edge >= sea_tomorrow_no_override_min_worst_case_edge
-        and consensus >= sea_tomorrow_no_override_min_consensus
-    )
-    general_risky_override = (
-        general_risky_override_enabled
-        and confidence_tier in general_risky_override_confidence
-        and signal_tier in general_risky_override_signal_tiers
-        and effective_agreement_pct >= general_risky_override_min_agreement_pct
-        and edge >= general_risky_override_min_edge
-        and consensus >= general_risky_override_min_consensus
+    exceptional_risky_override = (
+        exceptional_risky_override_enabled
+        and confidence_tier in exceptional_risky_override_confidence
+        and signal_tier in exceptional_risky_override_signal_tiers
+        and effective_agreement_pct >= exceptional_risky_override_min_agreement_pct
+        and edge >= exceptional_risky_override_min_edge
+        and min_agreeing_model_edge >= max(min_worst_case_edge, exceptional_risky_override_min_edge * 0.6)
+        and consensus >= exceptional_risky_override_min_consensus
     )
     if not effective_coverage_ok:
         return PolicyDecision(False, "coverage_not_ok", risk_label, risk_score)
@@ -482,19 +419,18 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
         return PolicyDecision(False, "city_observation_only", risk_label, risk_score)
     if enforce_blocked_city_keys and city_key and city_key in blocked_city_keys:
         return PolicyDecision(False, "city_blocked_historical_underperformance", risk_label, risk_score)
-    if degraded_reason and degraded_reason != "degraded_clob_price" and not fallback_coverage_ok:
+    if (
+        degraded_reason
+        and degraded_reason != "degraded_clob_price"
+        and not fallback_coverage_ok
+        and not tolerated_provider_degradation
+    ):
         return PolicyDecision(False, f"degraded:{degraded_reason}", risk_label, risk_score)
     effective_signal_tier = signal_tier
     if fallback_coverage_ok and signal_tier == "C":
         effective_signal_tier = "B"
-    if effective_signal_tier not in allowed_signal_tiers:
-        return PolicyDecision(False, "signal_tier_not_actionable", risk_label, risk_score)
     if confidence_tier == "risky":
         return PolicyDecision(False, "confidence_risky", risk_label, risk_score)
-    if risk_label == "Risky" and not tomorrow_risky_override and not strong_city_risky_override and not sea_tomorrow_no_override and not general_risky_override:
-        return PolicyDecision(False, "risk_label_risky", risk_label, risk_score)
-    if risk_label == "Moderate" and effective_signal_tier not in {"A+", "A", "B"}:
-        return PolicyDecision(False, "risk_label_not_safe", risk_label, risk_score)
     if min_agreeing_model_edge < min_worst_case_edge:
         return PolicyDecision(False, "worst_case_edge_too_low", risk_label, risk_score)
     if executable_quality_score < min_execution_quality:
@@ -514,31 +450,31 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
             return PolicyDecision(False, "today_edge_too_low", risk_label, risk_score)
         if consensus < today_min_consensus:
             return PolicyDecision(False, "today_consensus_too_low", risk_label, risk_score)
-    caution_edge_floor = 0.0
-    caution_consensus_floor = 0.0
+    required_edge, required_consensus = _baseline_thresholds(confidence_tier, policy_min_edge, policy_min_consensus)
+    if required_edge == float("inf"):
+        return PolicyDecision(False, "confidence_not_allowed", risk_label, risk_score)
+    signal_edge_adj, signal_consensus_adj = _signal_adjustments(effective_signal_tier)
+    risk_edge_adj, risk_consensus_adj = _risk_adjustments(risk_label)
+    required_edge += signal_edge_adj + risk_edge_adj
+    required_consensus += signal_consensus_adj + risk_consensus_adj
     if city_key and city_key in caution_city_keys:
-        caution_edge_floor += caution_edge_penalty
-        caution_consensus_floor += caution_consensus_penalty
+        required_edge += caution_edge_penalty
+        required_consensus += caution_consensus_penalty
     if normalized_bucket and normalized_bucket in caution_buckets:
-        caution_edge_floor += caution_edge_penalty
-        caution_consensus_floor += caution_consensus_penalty
-    if caution_edge_floor > 0:
-        if edge < max(policy_min_edge, policy_min_edge + caution_edge_floor):
-            return PolicyDecision(False, "historical_segment_edge_too_low", risk_label, risk_score)
-        if consensus < max(policy_min_consensus, policy_min_consensus + caution_consensus_floor):
-            return PolicyDecision(False, "historical_segment_consensus_too_low", risk_label, risk_score)
-    if confidence_tier in {"lock", "strong", "safe"}:
-        if edge < policy_min_edge:
-            return PolicyDecision(False, "edge_below_policy_min", risk_label, risk_score)
-        if consensus < policy_min_consensus:
-            return PolicyDecision(False, "consensus_below_policy_min", risk_label, risk_score)
-        return PolicyDecision(True, "allowed", risk_label, risk_score)
-    if confidence_tier == "near-safe":
-        if edge < near_safe_min_edge:
+        required_edge += caution_edge_penalty
+        required_consensus += caution_consensus_penalty
+    if risk_label == "Risky" and not exceptional_risky_override:
+        return PolicyDecision(False, "risk_label_risky", risk_label, risk_score)
+    if edge < required_edge:
+        if confidence_tier == "near-safe":
             return PolicyDecision(False, "near_safe_edge_too_low", risk_label, risk_score)
-        if consensus < near_safe_min_consensus:
+        if city_key in caution_city_keys or normalized_bucket in caution_buckets:
+            return PolicyDecision(False, "historical_segment_edge_too_low", risk_label, risk_score)
+        return PolicyDecision(False, "edge_below_policy_min", risk_label, risk_score)
+    if consensus < required_consensus:
+        if confidence_tier == "near-safe":
             return PolicyDecision(False, "near_safe_consensus_too_low", risk_label, risk_score)
-        if risk_label == "Risky":
-            return PolicyDecision(False, "near_safe_requires_safe_risk", risk_label, risk_score)
-        return PolicyDecision(True, "allowed", risk_label, risk_score)
-    return PolicyDecision(False, "confidence_not_allowed", risk_label, risk_score)
+        if city_key in caution_city_keys or normalized_bucket in caution_buckets:
+            return PolicyDecision(False, "historical_segment_consensus_too_low", risk_label, risk_score)
+        return PolicyDecision(False, "consensus_below_policy_min", risk_label, risk_score)
+    return PolicyDecision(True, "allowed", risk_label, risk_score)

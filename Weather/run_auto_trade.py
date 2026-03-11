@@ -98,6 +98,8 @@ def _run_weather_models(*, top: int, min_edge: float, min_consensus: float, exec
     command = [
         sys.executable,
         str(ROOT / "run_weather_models.py"),
+        "--run-source",
+        "auto_trader",
         "--top",
         str(top),
         "--min-edge",
@@ -144,6 +146,23 @@ def _summarize_cycle_output(output: str, *, live: bool) -> str:
         return ""
     if not live:
         return _sanitize_console_text("\n".join(lines[:8]))
+    if any(line.startswith("Nenhuma oportunidade encontrada") for line in lines):
+        selected: list[str] = []
+        allowed_prefixes = (
+            "Nenhuma oportunidade encontrada",
+            "Diagnostico do scan:",
+            "Principais motivos de bloqueio:",
+            "Oportunidades bloqueadas:",
+            "Resolucao atualizada:",
+            "-",
+        )
+        for line in lines:
+            if line.startswith(allowed_prefixes):
+                selected.append(line)
+            elif selected:
+                break
+        if selected:
+            return _sanitize_console_text("\n".join(selected[:12]))
     keep_prefixes = (
         "AVISO:",
         "Oportunidades encontradas:",

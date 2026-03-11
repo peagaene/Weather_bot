@@ -66,7 +66,7 @@ def main() -> int:
     python = sys.executable
     checks = [
         SmokeCheck("dashboard_py_compile", [python, "-m", "py_compile", "dashboard.py"], 60),
-        SmokeCheck("scan_once", [python, "run_weather_models.py", "--top", "10", "--show-blocked", "10", "--execute-top", "0"], 240),
+        SmokeCheck("scan_once", [python, "run_weather_models.py", "--run-source", "smoke_test", "--top", "10", "--show-blocked", "10", "--execute-top", "0"], 240),
         SmokeCheck("auto_trader_dry_run", [python, "run_auto_trade.py", "--iterations", "1", "--interval-seconds", "10"], 240),
         SmokeCheck("reconcile", [python, "run_reconcile_positions.py"], 120),
         SmokeCheck("latency_probe", [python, "run_latency_probe.py"], 180),

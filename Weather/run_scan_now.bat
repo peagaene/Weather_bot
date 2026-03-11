@@ -10,5 +10,5 @@ set WEATHER_EXECUTE_TOP=0
 set WEATHER_POLICY_TOMORROW_MAX_PRICE_CENTS=62
 set PAPERBOT_MIN_STAKE_USD=1
 set PAPERBOT_MAX_STAKE_USD=5
-python run_weather_models.py --top 10 --show-blocked 10 --execute-top 0
+python run_weather_models.py --run-source manual --manual-note scan_now_validation --top 10 --show-blocked 10 --execute-top 0
 pause

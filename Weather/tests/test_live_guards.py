@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,6 +97,8 @@ class LiveGuardsTests(unittest.TestCase):
                 storage = storage_cls.return_value
                 storage.init_run.return_value = None
                 storage.persist_run.return_value = None
+                storage.record_forecast_source_snapshots.return_value = 0
+                storage.record_station_observation_daily_highs.return_value = 0
                 run_weather_models.main(
                     [
                         "--live",
@@ -170,6 +173,66 @@ class LiveGuardsTests(unittest.TestCase):
             run_auto_trade._next_sleep_seconds(base_interval_seconds=60, consecutive_rate_limited_cycles=2),
             180,
         )
+
+    def test_auto_trade_summary_includes_scan_diagnostics_when_no_opportunities(self) -> None:
+        output = "\n".join(
+            [
+                "Nenhuma oportunidade encontrada com os filtros atuais.",
+                "Diagnostico do scan:",
+                "  - cities_processed: 18",
+                "  - market_fetch_error: 36",
+                "Principais motivos de bloqueio:",
+                "  - confidence_risky: 5",
+                "Resolucao atualizada: 0 posicoes, 0 mercados checados",
+            ]
+        )
+        summary = run_auto_trade._summarize_cycle_output(output, live=True)
+        self.assertIn("Diagnostico do scan:", summary)
+        self.assertIn("- market_fetch_error: 36", summary)
+
+    def test_run_weather_models_latest_json_contains_final_enriched_payload(self) -> None:
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            latest_json = str(Path(temp_dir) / "latest.json")
+            history_csv = str(Path(temp_dir) / "history.csv")
+            scan_lock = str(Path(temp_dir) / "scan.lock")
+            state_json = str(Path(temp_dir) / "state.json")
+            db_path = str(Path(temp_dir) / "weather.db")
+            with (
+                contextlib.redirect_stdout(stdout),
+                patch("run_weather_models.scan_weather_model_opportunities", return_value=[]),
+                patch("run_weather_models.get_last_scan_diagnostics", return_value={"market_fetch_error": 7}),
+                patch("run_weather_models.sync_open_positions", return_value={"updated_positions": 1, "checked_markets": 2}),
+                patch("run_weather_models.sync_prediction_resolutions", return_value={"updated_predictions": 3}),
+                patch("run_weather_models._build_station_observation_rows", return_value=[]),
+                patch("run_weather_models._build_forecast_source_snapshot_rows", return_value=[]),
+                patch("run_weather_models.WeatherBotStorage") as storage_cls,
+            ):
+                storage = storage_cls.return_value
+                storage.init_run.return_value = None
+                storage.persist_run.return_value = None
+                storage.record_forecast_source_snapshots.return_value = 0
+                storage.record_station_observation_daily_highs.return_value = 0
+                run_weather_models.main(
+                    [
+                        "--top",
+                        "1",
+                        "--latest-json",
+                        latest_json,
+                        "--history-csv",
+                        history_csv,
+                        "--scan-lock-file",
+                        scan_lock,
+                        "--state-json",
+                        state_json,
+                        "--db-path",
+                        db_path,
+                    ]
+                )
+            payload = json.loads(Path(latest_json).read_text(encoding="utf-8"))
+        self.assertEqual(payload["scan_diagnostics"]["market_fetch_error"], 7)
+        self.assertEqual(payload["resolution_sync"]["updated_positions"], 1)
+        self.assertEqual(payload["prediction_resolution_sync"]["updated_predictions"], 3)
 
 
 if __name__ == "__main__":

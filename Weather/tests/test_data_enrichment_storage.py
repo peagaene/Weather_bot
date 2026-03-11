@@ -240,6 +240,80 @@ class DataEnrichmentStorageTests(unittest.TestCase):
             self.assertEqual(by_segment["MIA/today"]["recommendation"], "block")
             self.assertEqual(by_segment["SEA/tomorrow"]["recommendation"], "prefer")
 
+    def test_persist_run_stores_extended_policy_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = WeatherBotStorage(Path(temp_dir) / "weather_bot.db")
+            storage.persist_run(
+                run_id="run-extended",
+                generated_at="2026-03-10T00:00:00+00:00",
+                raw_count=1,
+                count_selected=1,
+                filters={},
+                raw_predictions=[
+                    {
+                        "city_key": "SEA",
+                        "city_name": "Seattle",
+                        "day_label": "tomorrow",
+                        "date_str": "2026-03-11",
+                        "event_slug": "e1",
+                        "event_title": "e1",
+                        "bucket": "52-53Â°F",
+                        "side": "NO",
+                        "edge": 20.0,
+                        "ev_percent": 3.0,
+                        "price_cents": 50.0,
+                        "model_prob": 70.0,
+                        "market_prob": 45.0,
+                        "ensemble_prediction": 51.0,
+                        "weighted_score": 20.0,
+                        "consensus_score": 0.8,
+                        "spread": 1.0,
+                        "sigma": 1.0,
+                        "market_slug": "m1",
+                        "market_id": "m1",
+                        "polymarket_url": "u",
+                        "model_predictions": {"nws": 51.0},
+                        "agreement_summary": "5/6",
+                        "coverage_score": 0.9,
+                        "coverage_issue_type": None,
+                        "signal_tier": "B",
+                        "signal_decision": "review",
+                        "mean_agreeing_model_edge": 18.0,
+                        "min_agreeing_model_edge": 14.0,
+                        "agreeing_model_count": 5,
+                        "executable_quality_score": 0.82,
+                        "data_quality_score": 0.84,
+                        "valid_model_count": 6,
+                        "required_model_count": 5,
+                        "provider_failures": ["nws"],
+                        "provider_failure_details": {"nws": "timeout"},
+                        "effective_weights": {"nws": 1.1},
+                        "adversarial_score": 67.5,
+                        "execution_priority_score": 61.2,
+                    }
+                ],
+                opportunities=[],
+                order_plans=[],
+                executions=[],
+            )
+            with storage._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT signal_tier, signal_decision, min_agreeing_model_edge, executable_quality_score,
+                           data_quality_score, coverage_score, provider_failures_json, effective_weights_json
+                    FROM scan_predictions
+                    WHERE run_id = 'run-extended'
+                    """
+                ).fetchone()
+            self.assertEqual(row["signal_tier"], "B")
+            self.assertEqual(row["signal_decision"], "review")
+            self.assertEqual(row["min_agreeing_model_edge"], 14.0)
+            self.assertEqual(row["executable_quality_score"], 0.82)
+            self.assertEqual(row["data_quality_score"], 0.84)
+            self.assertEqual(row["coverage_score"], 0.9)
+            self.assertEqual(row["provider_failures_json"], '["nws"]')
+            self.assertEqual(row["effective_weights_json"], '{"nws": 1.1}')
+
 
 if __name__ == "__main__":
     unittest.main()

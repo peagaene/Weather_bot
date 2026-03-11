@@ -16,6 +16,7 @@ from paperbot.degendoppler import CITY_CONFIGS
 from paperbot.weather_models import (
     _hrrr_daily_cache_key,
     _cache_key_for_name,
+    _load_provider_rollout_profile,
     _load_source_weight_profile,
     _load_truth_weight_profile,
     ModelForecast,
@@ -158,6 +159,45 @@ class WeatherModelsEnsembleTests(unittest.TestCase):
         self.assertIsNotNone(ensemble)
         assert ensemble is not None
         self.assertAlmostEqual(ensemble.effective_weights["gfs"], 1.0 * 0.9 * 0.95 * 0.92 * 0.98 * 0.85, places=3)
+
+    def test_provider_rollout_profile_is_composed_for_optional_providers(self) -> None:
+        city = next(item for item in CITY_CONFIGS if item.key == "SEA")
+        forecasts = {
+            "openweather": [ModelForecast("openweather", "2026-03-08", 71.0)],
+            "nws": [ModelForecast("nws", "2026-03-08", 70.0)],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = Path(temp_dir) / "provider_rollout_profile.json"
+            profile_path.write_text(
+                """
+                {
+                  "providers": {
+                    "openweather": {
+                      "stage": "eligible_for_weighting",
+                      "recommendation": "candidate_weighting",
+                      "weight_multiplier": 1.0
+                    },
+                    "weatherapi": {
+                      "stage": "observation_only",
+                      "recommendation": "observe",
+                      "weight_multiplier": 0.9
+                    }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            _load_provider_rollout_profile.cache_clear()
+            try:
+                with patch.dict("os.environ", {"WEATHER_PROVIDER_ROLLOUT_PROFILE_PATH": str(profile_path)}, clear=False):
+                    ensemble = build_ensemble_for_date(city, forecasts, "2026-03-08")
+            finally:
+                _load_provider_rollout_profile.cache_clear()
+
+        self.assertIsNotNone(ensemble)
+        assert ensemble is not None
+        self.assertAlmostEqual(ensemble.effective_weights["openweather"], 0.85, places=3)
+        self.assertAlmostEqual(ensemble.effective_weights["nws"], 1.1, places=3)
 
     def test_short_horizon_weights_favor_near_term_sources(self) -> None:
         city = CITY_CONFIGS[0]

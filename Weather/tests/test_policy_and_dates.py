@@ -129,6 +129,76 @@ class PolicyAndDatesTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.reason, "allowed")
 
+    def test_policy_allows_tolerated_provider_degradation_when_coverage_is_still_strong(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "SEA",
+                "day_label": "tomorrow",
+                "bucket": "46-47Â°F",
+                "consensus_score": 0.72,
+                "spread": 1.0,
+                "sigma": 1.8,
+                "ensemble_prediction": 46.4,
+                "confidence_tier": "safe",
+                "signal_tier": "B",
+                "edge": 21.0,
+                "min_agreeing_model_edge": 13.0,
+                "price_cents": 28.0,
+                "coverage_ok": False,
+                "coverage_score": 0.67,
+                "coverage_issue_type": "provider_failure",
+                "valid_model_count": 5,
+                "required_model_count": 5,
+                "agreement_models": 5,
+                "total_models": 6,
+                "agreement_pct": 83.33,
+                "provider_failures": ["ecmwf_ens", "gfs_ens", "icon_ens"],
+                "degraded_reason": "provider_failures:ecmwf_ens,gfs_ens,icon_ens",
+                "executable_quality_score": 0.74,
+                "data_quality_score": 0.76,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
+
+    def test_policy_blocks_degradation_when_non_provider_failure_is_present(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "SEA",
+                "day_label": "tomorrow",
+                "bucket": "46-47Â°F",
+                "consensus_score": 0.72,
+                "spread": 1.0,
+                "sigma": 1.8,
+                "ensemble_prediction": 46.4,
+                "confidence_tier": "safe",
+                "signal_tier": "B",
+                "edge": 21.0,
+                "min_agreeing_model_edge": 13.0,
+                "price_cents": 28.0,
+                "coverage_ok": False,
+                "coverage_score": 0.67,
+                "coverage_issue_type": "mixed",
+                "valid_model_count": 4,
+                "required_model_count": 5,
+                "agreement_models": 4,
+                "total_models": 5,
+                "agreement_pct": 80.0,
+                "provider_failures": ["ecmwf_ens", "gfs_ens"],
+                "degraded_reason": "insufficient_model_coverage:4;provider_failures:ecmwf_ens,gfs_ens",
+                "executable_quality_score": 0.74,
+                "data_quality_score": 0.76,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "degraded:insufficient_model_coverage:4;provider_failures:ecmwf_ens,gfs_ens")
+
     def test_policy_blocks_historically_bad_city_even_if_signal_is_strong(self) -> None:
         opportunity = type(
             "Opportunity",
@@ -277,7 +347,7 @@ class PolicyAndDatesTests(unittest.TestCase):
         self.assertEqual(decision.reason, "allowed")
         self.assertEqual(decision.risk_label, "Risky")
 
-    def test_policy_keeps_c_tier_blocked_even_with_tomorrow_risky_override_shape(self) -> None:
+    def test_policy_uses_risk_gate_as_primary_block_for_c_tier_risky_case(self) -> None:
         opportunity = type(
             "Opportunity",
             (),
@@ -304,10 +374,9 @@ class PolicyAndDatesTests(unittest.TestCase):
                 "data_quality_score": 0.86,
             },
         )()
-        with patch.dict("os.environ", {"WEATHER_POLICY_ALLOWED_SIGNAL_TIERS": "A+,A,B"}, clear=False):
-            decision = apply_trade_policy(opportunity)
+        decision = apply_trade_policy(opportunity)
         self.assertFalse(decision.allowed)
-        self.assertEqual(decision.reason, "signal_tier_not_actionable")
+        self.assertEqual(decision.reason, "risk_label_risky")
 
     def test_policy_allows_strong_city_tomorrow_risky_override_for_sea(self) -> None:
         opportunity = type(
@@ -325,7 +394,7 @@ class PolicyAndDatesTests(unittest.TestCase):
                 "signal_tier": "B",
                 "edge": 32.2,
                 "min_agreeing_model_edge": 19.9,
-                "price_cents": 59.0,
+                "price_cents": 54.0,
                 "coverage_ok": True,
                 "coverage_score": 0.94,
                 "agreement_models": 10,
@@ -350,7 +419,7 @@ class PolicyAndDatesTests(unittest.TestCase):
         self.assertEqual(decision.reason, "allowed")
         self.assertIn(decision.risk_label, {"Moderate", "Risky"})
 
-    def test_policy_allows_sea_tomorrow_no_override_with_price_up_to_61(self) -> None:
+    def test_policy_does_not_apply_removed_sea_specific_price_override(self) -> None:
         opportunity = type(
             "Opportunity",
             (),
@@ -382,10 +451,7 @@ class PolicyAndDatesTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_ENABLED": "0",
                 "WEATHER_POLICY_TOMORROW_PRICE_OVERRIDE_ENABLED": "0",
-                "WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_ENABLED": "1",
-                "WEATHER_POLICY_SEA_TOMORROW_NO_MAX_PRICE_CENTS": "61",
                 "WEATHER_POLICY_MAX_SPREAD": "4",
             },
             clear=False,
@@ -396,10 +462,10 @@ class PolicyAndDatesTests(unittest.TestCase):
                 min_price_cents=10.0,
                 max_price_cents=55.0,
             )
-        self.assertTrue(decision.allowed)
-        self.assertEqual(decision.reason, "allowed")
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "price_above_policy_max")
         self.assertEqual(min_price, 10.0)
-        self.assertEqual(max_price, 61.0)
+        self.assertEqual(max_price, 55.0)
 
     def test_policy_does_not_apply_strong_city_override_to_non_whitelisted_city(self) -> None:
         opportunity = type(
@@ -417,7 +483,7 @@ class PolicyAndDatesTests(unittest.TestCase):
                 "signal_tier": "B",
                 "edge": 32.2,
                 "min_agreeing_model_edge": 19.9,
-                "price_cents": 59.0,
+                "price_cents": 54.0,
                 "coverage_ok": True,
                 "coverage_score": 0.94,
                 "agreement_models": 10,
@@ -517,7 +583,7 @@ class PolicyAndDatesTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.reason, "allowed")
 
-    def test_policy_allows_strong_c_tier_risky_case_with_exceptional_agreement(self) -> None:
+    def test_policy_blocks_strong_c_tier_when_risk_geometry_is_still_risky(self) -> None:
         opportunity = type(
             "Opportunity",
             (),
@@ -542,6 +608,37 @@ class PolicyAndDatesTests(unittest.TestCase):
                 "degraded_reason": None,
                 "executable_quality_score": 0.82,
                 "data_quality_score": 0.83,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "risk_label_risky")
+
+    def test_policy_allows_c_tier_when_other_inputs_are_safe_and_edge_is_strong(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "SEA",
+                "day_label": "tomorrow",
+                "bucket": "46-47Â°F",
+                "consensus_score": 0.74,
+                "spread": 0.8,
+                "sigma": 1.6,
+                "ensemble_prediction": 46.6,
+                "confidence_tier": "strong",
+                "signal_tier": "C",
+                "edge": 27.0,
+                "min_agreeing_model_edge": 17.0,
+                "price_cents": 34.0,
+                "coverage_ok": True,
+                "coverage_score": 0.9,
+                "agreement_models": 11,
+                "total_models": 12,
+                "agreement_pct": 91.67,
+                "degraded_reason": None,
+                "executable_quality_score": 0.82,
+                "data_quality_score": 0.84,
             },
         )()
         decision = apply_trade_policy(opportunity)

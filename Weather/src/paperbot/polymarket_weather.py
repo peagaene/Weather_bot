@@ -32,6 +32,7 @@ MARKET_FEE = 0.02
 POLYMARKET_REQUEST_TIMEOUT_SECONDS = max(3.0, float(os.getenv("POLYMARKET_REQUEST_TIMEOUT_SECONDS", "8") or 8))
 POLYMARKET_GAMMA_RETRY_ATTEMPTS = max(1, int(os.getenv("POLYMARKET_GAMMA_RETRY_ATTEMPTS", "3") or 3))
 POLYMARKET_PRICE_RETRY_ATTEMPTS = max(1, int(os.getenv("POLYMARKET_PRICE_RETRY_ATTEMPTS", "2") or 2))
+_LAST_SCAN_DIAGNOSTICS: dict[str, Any] = {}
 
 
 @dataclass
@@ -106,6 +107,10 @@ class MarketScan:
     buckets: list[MarketBucket]
 
 
+def get_last_scan_diagnostics() -> dict[str, Any]:
+    return dict(_LAST_SCAN_DIAGNOSTICS)
+
+
 def _request_json(url: str, timeout: float = POLYMARKET_REQUEST_TIMEOUT_SECONDS) -> Any:
     request = urllib.request.Request(
         url=url,
@@ -173,20 +178,34 @@ def _slug_for(city: CityConfig, target_date: datetime) -> str:
     return f"highest-temperature-in-{city.market_city}-on-{month}-{target_date.day}-{target_date.year}"
 
 
-def fetch_market_scan(city: CityConfig, target_date: datetime, *, book_cache: dict[str, dict[str, float | None]] | None = None) -> MarketScan | None:
+def fetch_market_scan(
+    city: CityConfig,
+    target_date: datetime,
+    *,
+    book_cache: dict[str, dict[str, float | None]] | None = None,
+    diagnostics: dict[str, int] | None = None,
+) -> MarketScan | None:
     slug = _slug_for(city, target_date)
     url = f"{POLYMARKET_GAMMA_BASE_URL}/events?slug={urllib.parse.quote(slug, safe='')}"
     try:
         data = _request_json(url)
     except Exception:
+        if diagnostics is not None:
+            diagnostics["market_fetch_error"] = diagnostics.get("market_fetch_error", 0) + 1
         return None
     if not isinstance(data, list) or not data:
+        if diagnostics is not None:
+            diagnostics["market_not_found"] = diagnostics.get("market_not_found", 0) + 1
         return None
     event = data[0]
     if event.get("closed") is True or event.get("active") is False:
+        if diagnostics is not None:
+            diagnostics["market_inactive"] = diagnostics.get("market_inactive", 0) + 1
         return None
     markets = event.get("markets") or []
     if not isinstance(markets, list) or not markets:
+        if diagnostics is not None:
+            diagnostics["market_empty"] = diagnostics.get("market_empty", 0) + 1
         return None
 
     parsed_markets: list[dict[str, Any]] = []
@@ -485,33 +504,31 @@ def _signal_tier(
     worst_case_score = max(0.0, min(1.0, min_agreeing_model_edge / 25.0))
     agreement_score = max(0.0, min(1.0, agreement_pct / 100.0))
     adversarial_score = (
-        (probability_score * 0.2)
-        + (edge_score * 0.2)
-        + (worst_case_score * 0.25)
-        + (agreement_score * 0.15)
-        + (max(0.0, min(1.0, consensus_score)) * 0.1)
-        + (executable_quality_score * 0.05)
-        + (data_quality_score * 0.05)
+        (probability_score * 0.15)
+        + (edge_score * 0.25)
+        + (worst_case_score * 0.30)
+        + (executable_quality_score * 0.15)
+        + (data_quality_score * 0.10)
+        + (agreement_score * 0.03)
+        + (max(0.0, min(1.0, consensus_score)) * 0.02)
     )
     if (
-        min_agreeing_model_edge >= 20.0
-        and agreement_pct >= 88.0
+        mean_agreeing_model_edge >= 18.0
+        and min_agreeing_model_edge >= 20.0
         and executable_quality_score >= 0.8
         and data_quality_score >= 0.75
-        and consensus_score >= 0.7
     ):
         return "A+", "auto", round(adversarial_score * 100.0, 2)
     if (
-        min_agreeing_model_edge >= 12.0
-        and agreement_pct >= 75.0
+        mean_agreeing_model_edge >= 10.0
+        and min_agreeing_model_edge >= 12.0
         and executable_quality_score >= 0.65
         and data_quality_score >= 0.6
-        and consensus_score >= 0.55
     ):
         return "A", "auto", round(adversarial_score * 100.0, 2)
     if (
-        min_agreeing_model_edge >= 5.0
-        and agreement_pct >= 60.0
+        mean_agreeing_model_edge >= 6.0
+        and min_agreeing_model_edge >= 5.0
         and executable_quality_score >= 0.45
         and data_quality_score >= 0.45
     ):
@@ -892,25 +909,47 @@ def scan_weather_model_opportunities(
 
     opportunities: list[WeatherOpportunity] = []
     book_cache: dict[str, dict[str, float | None]] = {}
+    diagnostics: dict[str, Any] = {
+        "cities_processed": 0,
+        "dates_considered": 0,
+        "ensemble_missing": 0,
+        "consensus_below_min": 0,
+        "market_fetch_error": 0,
+        "market_not_found": 0,
+        "market_inactive": 0,
+        "market_empty": 0,
+        "below_edge_or_probability": 0,
+        "opportunities_kept": 0,
+    }
     for city in CITY_CONFIGS:
+        diagnostics["cities_processed"] += 1
         target_dates = _local_target_dates(city, reference, len(day_labels))
         target_date_strs = [item.date().isoformat() for item in target_dates]
         ensembles = fetch_city_ensembles(city, target_date_strs)
         for idx, day_label in enumerate(day_labels):
+            diagnostics["dates_considered"] += 1
             target_date = target_dates[idx]
             date_str = target_date.date().isoformat()
             ensemble = ensembles.get(date_str)
-            if ensemble is None or ensemble.consensus_score < min_consensus:
+            if ensemble is None:
+                diagnostics["ensemble_missing"] += 1
                 continue
-            scan = fetch_market_scan(city, target_date, book_cache=book_cache)
+            if ensemble.consensus_score < min_consensus:
+                diagnostics["consensus_below_min"] += 1
+                continue
+            scan = fetch_market_scan(city, target_date, book_cache=book_cache, diagnostics=diagnostics)
             if scan is None:
                 continue
             for item in score_market_scan(city, day_label, scan, ensemble, horizon_days=idx):
                 if item.price_source == "gamma_outcome_price":
                     item.degraded_reason = "degraded_clob_price"
                 if item.edge < min_edge or item.model_prob < min_model_prob:
+                    diagnostics["below_edge_or_probability"] += 1
                     continue
                 opportunities.append(item)
+                diagnostics["opportunities_kept"] += 1
 
     opportunities.sort(key=lambda item: item.weighted_score, reverse=True)
+    global _LAST_SCAN_DIAGNOSTICS
+    _LAST_SCAN_DIAGNOSTICS = diagnostics
     return opportunities

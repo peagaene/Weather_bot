@@ -21,6 +21,8 @@ def _run_scan(*, top: int, min_edge: float, min_consensus: float) -> subprocess.
     command = [
         sys.executable,
         str(ROOT / "run_weather_models.py"),
+        "--run-source",
+        "monitor",
         "--top",
         str(top),
         "--min-edge",

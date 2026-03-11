@@ -19,7 +19,7 @@ from paperbot.env import load_app_env
 from paperbot.history import append_csv_rows, write_json
 from paperbot.live_trader import execute_order_plan, sync_live_exchange_state
 from paperbot.polymarket_live import build_order_plan, summarize_plan
-from paperbot.polymarket_weather import scan_weather_model_opportunities
+from paperbot.polymarket_weather import get_last_scan_diagnostics, scan_weather_model_opportunities
 from paperbot.reconciliation import sync_open_positions, sync_prediction_resolutions
 from paperbot.selection import explain_blocked_opportunities, filter_opportunities, summarize_filter_rejections
 from paperbot.storage import WeatherBotStorage
@@ -464,7 +464,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--export-json", default=None)
     parser.add_argument("--export-csv", default=None)
     parser.add_argument("--safe-share", action="store_true", help="Redact market URLs, token ids and operational fields from stdout/JSON exports.")
+    parser.add_argument(
+        "--run-source",
+        default=os.getenv("WEATHER_RUN_SOURCE", "unspecified"),
+        help="Origin of this run, e.g. manual, auto_trader, monitor, smoke_test.",
+    )
+    parser.add_argument(
+        "--manual-note",
+        default=os.getenv("WEATHER_MANUAL_RUN_NOTE", "").strip(),
+        help="Required note for manual runs explaining why the run was executed.",
+    )
     args = parser.parse_args(argv)
+    run_source = str(args.run_source or "unspecified").strip().lower()
+    manual_note = str(args.manual_note or "").strip()
+    if run_source == "manual" and not manual_note:
+        parser.error("--manual-note is required when --run-source=manual")
     _ensure_policy_profile_fresh()
     _ensure_source_weight_profile_fresh()
     _ensure_truth_weight_profile_fresh()
@@ -497,6 +511,8 @@ def main(argv: list[str] | None = None) -> None:
         "bucket_cooldown_minutes": args.bucket_cooldown_minutes,
         "replace_open_orders": args.replace_open_orders,
         "replace_price_threshold_cents": args.replace_price_threshold_cents,
+        "run_source": run_source,
+        "run_note": manual_note if run_source == "manual" else (manual_note or None),
     }
     storage = None if args.no_history else WeatherBotStorage(_resolve_path(args.db_path))
     if storage is not None:
@@ -670,16 +686,13 @@ def main(argv: list[str] | None = None) -> None:
         executions=executions,
         execute_count=execute_count,
     )
+    payload["scan_diagnostics"] = get_last_scan_diagnostics()
 
-    export_payload = _build_safe_share_payload(payload) if args.safe_share else payload
-    if args.export_json:
-        write_json(_resolve_path(args.export_json), export_payload)
     if args.export_csv:
         append_csv_rows(_resolve_path(args.export_csv), _build_history_rows(run_id, selected, plans, executions, generated_at))
     if not args.no_history:
         history_rows = _build_history_rows(run_id, selected, plans, executions, generated_at)
         append_csv_rows(_resolve_path(args.history_csv), history_rows)
-        write_json(_resolve_path(args.latest_json), payload)
     sync_summary = None
     live_sync_error = None
     if not args.no_history and storage is not None:
@@ -721,6 +734,10 @@ def main(argv: list[str] | None = None) -> None:
             payload["prediction_resolution_sync"] = prediction_sync_summary
 
     export_payload = _build_safe_share_payload(payload) if args.safe_share else payload
+    if args.export_json:
+        write_json(_resolve_path(args.export_json), export_payload)
+    if not args.no_history:
+        write_json(_resolve_path(args.latest_json), payload)
 
     if args.json:
         print(json.dumps(export_payload, indent=2))
@@ -731,6 +748,21 @@ def main(argv: list[str] | None = None) -> None:
 
     if not selected:
         print("Nenhuma oportunidade encontrada com os filtros atuais.")
+        diagnostics = payload.get("scan_diagnostics") or {}
+        if diagnostics:
+            print("Diagnostico do scan:")
+            for key in (
+                "cities_processed",
+                "dates_considered",
+                "ensemble_missing",
+                "consensus_below_min",
+                "market_fetch_error",
+                "market_not_found",
+                "market_inactive",
+                "market_empty",
+                "below_edge_or_probability",
+            ):
+                print(f"  - {key}: {diagnostics.get(key, 0)}")
         if rejection_summary:
             print("Principais motivos de bloqueio:")
             for reason, qty in rejection_summary.items():
