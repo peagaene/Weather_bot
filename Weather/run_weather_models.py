@@ -28,6 +28,7 @@ from paperbot.weather_models import (
     _load_source_weight_profile,
     _load_truth_weight_profile,
     fetch_meteostat_observed_daily_highs,
+    fetch_noaa_isd_observed_daily_highs,
     fetch_nws_observed_daily_highs,
     nws_station_id,
 )
@@ -392,6 +393,14 @@ def _build_station_observation_rows(*, captured_at: str) -> list[dict]:
                 station_id, observed_daily_highs = fetch_meteostat_observed_daily_highs(city, lookback_days=7)
             except Exception:
                 station_id, observed_daily_highs = None, {}
+            source_name = "meteostat_daily_observation"
+            if not observed_daily_highs:
+                try:
+                    station_id, observed_daily_highs = fetch_noaa_isd_observed_daily_highs(city, lookback_days=7)
+                except Exception:
+                    station_id, observed_daily_highs = None, {}
+                if observed_daily_highs:
+                    source_name = "noaa_isd_observation"
             for local_date, observed_high_f in observed_daily_highs.items():
                 try:
                     numeric_high = float(observed_high_f)
@@ -405,7 +414,7 @@ def _build_station_observation_rows(*, captured_at: str) -> list[dict]:
                         "station_id": station_id or f"point:{city.lat:.4f},{city.lon:.4f}",
                         "local_date": local_date,
                         "observed_high_f": round(numeric_high, 4),
-                        "source": "meteostat_daily_observation",
+                        "source": source_name,
                         "raw_context": {
                             "timezone_name": city.timezone_name,
                             "regime_tags": list(city.regime_tags),

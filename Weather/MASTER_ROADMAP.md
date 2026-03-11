@@ -68,6 +68,10 @@ Este arquivo é o plano principal. Os demais `.md` continuam existindo como docu
 - [x] Visual Crossing
 - [x] OpenWeather
 - [x] Meteostat para observação internacional
+- [x] NOAA ISD para observação internacional
+- [x] Weatherbit
+- [x] Meteosource
+- [x] MET Norway
 
 ### Cidades
 - [x] cidades dos EUA em live/observação
@@ -132,12 +136,12 @@ Objetivo: implementar um provider por vez, com validação e sem interromper o l
 
 #### Fase 1: truth / observação
 - [x] Meteostat
-- [ ] NOAA ISD
+- [x] NOAA ISD
 
 #### Fase 2: novos forecasts globais
-- [ ] Weatherbit
-- [ ] Meteosource
-- [ ] MET Norway
+- [x] Weatherbit
+- [x] Meteosource
+- [x] MET Norway
 
 #### Fase 3: reforço regional
 - [ ] Bright Sky

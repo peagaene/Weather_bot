@@ -41,8 +41,8 @@ Esses aparecem na imagem, mas não são APIs separadas no nosso desenho atual.
 | Open-Meteo | Funcionando | Forecast global |
 | OpenWeather | Implementado, validar | Forecast/current com key |
 | WeatherAPI | Implementado, validar | Forecast/current com key |
-| Weatherbit | Ainda não implementado | Planejado |
-| Meteosource | Ainda não implementado | Planejado |
+| Weatherbit | Implementado, validar | Forecast/current com key |
+| Meteosource | Implementado, validar | Forecast com key |
 | Visual Crossing | Implementado, validar | Forecast/history com key |
 | Weatherstack | Ainda não implementado | Não priorizado ainda |
 | Tomorrow.io | Implementado, validar | Forecast/current com key |
@@ -57,7 +57,7 @@ Esses aparecem na imagem, mas não são APIs separadas no nosso desenho atual.
 |---|---|---|
 | Xweather Observations | Ainda não implementado | Não priorizado ainda |
 | The Weather Company Observations | Ainda não implementado | Não priorizado ainda |
-| Weatherbit Current Weather | Ainda não implementado | Entraria junto com Weatherbit |
+| Weatherbit Current Weather | Implementado, validar | Entrou junto com Weatherbit |
 | Meteostat | Implementado, observação | Truth internacional, recém integrado |
 | OpenWeather Current / One Call | Implementado, validar | Já entra pelo provider OpenWeather |
 
@@ -72,8 +72,9 @@ Esses aparecem na imagem, mas não são APIs separadas no nosso desenho atual.
 | Fonte | Status no bot | Observação |
 |---|---|---|
 | NOAA / NWS API | Funcionando | Forecast + observação EUA |
+| NOAA ISD | Implementado, observação | Truth global fail-open para cidades internacionais |
 | NOAA Climate Data Online (CDO) | Ainda não implementado | Bom para histórico/backfill |
-| MET Norway API | Ainda não implementado | Planejado |
+| MET Norway API | Implementado, validar | Forecast global sem key |
 | FMI Open Data | Ainda não implementado | Não priorizado ainda |
 | DWD Open Data | Ainda não implementado | Pode ser coberto por Bright Sky depois |
 | Met Office DataHub | Ainda não implementado | Não priorizado ainda |
@@ -114,7 +115,15 @@ Esses são modelos, não APIs comerciais separadas na forma como você listou.
    - já integrado
    - falta validação em ambiente com dependência instalada
 2. NOAA ISD
+   - já integrado
+   - falta validação com dados reais por cidade
 3. Weatherbit
+   - já integrado
+   - depende de `WEATHERBIT_API_KEY`
 4. Meteosource
+   - já integrado
+   - depende de `METEOSOURCE_API_KEY`
 5. MET Norway
+   - já integrado
+   - falta validação com dados reais por cidade
 6. Bright Sky

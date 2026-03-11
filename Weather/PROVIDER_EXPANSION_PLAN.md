@@ -24,19 +24,23 @@ Expand weather coverage safely without degrading live execution quality.
 2. `NOAA ISD`
    - Purpose: raw global station truth backfill
    - Why second: complements Meteostat and reduces single-source dependence
+   - Status: implemented, validating with real-city coverage
 
 ### Phase 2: New global forecast providers
 3. `Weatherbit`
    - Purpose: forecast + current weather
    - Why: strong commercial global coverage
+   - Status: implemented, pending API-key validation
 
 4. `Meteosource`
    - Purpose: global forecast and historical forecast
    - Why: useful for cities outside the US
+   - Status: implemented, pending API-key validation
 
 5. `MET Norway`
    - Purpose: free global forecast
    - Why: broad coverage, good fallback
+   - Status: implemented, validating with real-city coverage
 
 ### Phase 3: City/region-specific reinforcement
 6. `Bright Sky`

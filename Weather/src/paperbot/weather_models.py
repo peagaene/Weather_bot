@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import importlib
 import math
@@ -27,13 +28,24 @@ from .degendoppler import CITY_CONFIGS, CityConfig
 OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ENSEMBLE_BASE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 WEATHER_GOV_BASE_URL = "https://api.weather.gov"
+NOAA_ISD_HISTORY_URL = "https://www.ncei.noaa.gov/pub/data/noaa/isd-history.csv"
+NOAA_ISD_ACCESS_BASE_URL = "https://www.ncei.noaa.gov/data/global-hourly/access"
 TOMORROW_API_KEY = os.getenv("TOMORROW_API_KEY", "").strip()
 WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY", "").strip()
 VISUAL_CROSSING_API_KEY = os.getenv("VISUAL_CROSSING_API_KEY", "").strip()
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "").strip()
+WEATHERBIT_API_KEY = os.getenv("WEATHERBIT_API_KEY", "").strip()
+METEOSOURCE_API_KEY = os.getenv("METEOSOURCE_API_KEY", "").strip()
+MET_NORWAY_USER_AGENT = (
+    os.getenv("MET_NORWAY_USER_AGENT", "").strip()
+    or "weather-bot/1.0 (https://api.weather.gov; contact=local-script)"
+)
+WEATHER_ENABLE_METEOSOURCE = os.getenv("WEATHER_ENABLE_METEOSOURCE", "1").strip().lower() not in {"0", "false", "no"}
+WEATHER_ENABLE_MET_NORWAY = os.getenv("WEATHER_ENABLE_MET_NORWAY", "0").strip().lower() in {"1", "true", "yes"}
 WEATHER_ENABLE_MOS = os.getenv("WEATHER_ENABLE_MOS", "1").strip().lower() not in {"0", "false", "no"}
 WEATHER_ENABLE_HRRR = os.getenv("WEATHER_ENABLE_HRRR", "0").strip().lower() in {"1", "true", "yes"}
 WEATHER_ENABLE_METEOSTAT = os.getenv("WEATHER_ENABLE_METEOSTAT", "1").strip().lower() not in {"0", "false", "no"}
+WEATHER_ENABLE_NOAA_ISD = os.getenv("WEATHER_ENABLE_NOAA_ISD", "1").strip().lower() not in {"0", "false", "no"}
 WEATHER_CALIBRATION_PATH = os.getenv(
     "WEATHER_CALIBRATION_PATH",
     str(Path(__file__).resolve().parents[2] / "export" / "calibration" / "weather_model_calibration.json"),
@@ -72,9 +84,13 @@ PROVIDER_CACHE_POLICY: dict[str, dict[str, int]] = {
     "weatherapi": {"ttl": 1800, "max_stale": 7200},
     "visualcrossing": {"ttl": 1800, "max_stale": 7200},
     "openweather": {"ttl": 1800, "max_stale": 7200},
+    "weatherbit": {"ttl": 1800, "max_stale": 7200},
+    "meteosource": {"ttl": 1800, "max_stale": 7200},
+    "met_norway": {"ttl": 1800, "max_stale": 7200},
     "mos": {"ttl": 10800, "max_stale": 21600},
     "hrrr": {"ttl": 3600, "max_stale": 7200},
     "meteostat": {"ttl": 10800, "max_stale": 43200},
+    "noaa_isd": {"ttl": 21600, "max_stale": 86400},
 }
 
 OPEN_METEO_MODELS: dict[str, str | None] = {
@@ -94,6 +110,9 @@ MODEL_WEIGHTS: dict[str, float] = {
     "weatherapi": 0.95,
     "visualcrossing": 0.95,
     "openweather": 0.85,
+    "weatherbit": 0.95,
+    "meteosource": 0.95,
+    "met_norway": 0.9,
     "mos": 0.95,
     "hrrr": 1.15,
     "gfs": 1.0,
@@ -107,7 +126,16 @@ ENSEMBLE_MODELS: dict[str, str] = {
     "ecmwf_ens": "ecmwf_ifs025",
     "icon_ens": "icon_seamless",
 }
-OPTIONAL_PROVIDER_NAMES = ("tomorrow", "weatherapi", "visualcrossing", "openweather", "hrrr")
+OPTIONAL_PROVIDER_NAMES = (
+    "tomorrow",
+    "weatherapi",
+    "visualcrossing",
+    "openweather",
+    "weatherbit",
+    "meteosource",
+    "met_norway",
+    "hrrr",
+)
 
 MOS_PRODUCT_SPECS: dict[str, dict[str, str]] = {
     "mav": {
@@ -644,7 +672,7 @@ def _provider_failure_penalty(
     if not name:
         return 0.0
     base_penalty = 0.08 if for_data_quality else 0.06
-    if name in {"tomorrow", "weatherapi", "visualcrossing", "openweather"}:
+    if name in {"tomorrow", "weatherapi", "visualcrossing", "openweather", "weatherbit", "meteosource", "met_norway"}:
         return base_penalty * 0.75
     if name == "nws":
         if horizon_days is not None and horizon_days <= 1:
@@ -1557,6 +1585,105 @@ def fetch_meteostat_observed_daily_highs(city: CityConfig, *, lookback_days: int
     return _fetch_meteostat_observed_daily_highs(city, lookback_days=lookback_days)
 
 
+def _parse_noaa_isd_temperature_f(raw_value: str | None) -> float | None:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    parts = text.split(",", 1)
+    raw_temp = parts[0].strip()
+    if raw_temp in {"", "+9999", "-9999", "9999"}:
+        return None
+    try:
+        temp_c = float(raw_temp) / 10.0
+    except (TypeError, ValueError):
+        return None
+    return _to_fahrenheit(temp_c, "C")
+
+
+def _noaa_isd_station_id(row: dict[str, str]) -> str | None:
+    usaf = str(row.get("USAF") or "").strip()
+    wban = str(row.get("WBAN") or "").strip()
+    if not usaf:
+        return None
+    return f"{usaf}-{wban or '99999'}"
+
+
+def _noaa_isd_candidate_stations(city: CityConfig) -> list[dict[str, str]]:
+    if not WEATHER_ENABLE_NOAA_ISD:
+        return []
+    text = _request_text(NOAA_ISD_HISTORY_URL, provider_name="noaa_isd", timeout=45.0)
+    reader = csv.DictReader(text.splitlines())
+    today = datetime.now(ZoneInfo(city.timezone_name)).date()
+    ranked: list[tuple[float, dict[str, str]]] = []
+    for row in reader:
+        if not isinstance(row, dict):
+            continue
+        station_id = _noaa_isd_station_id(row)
+        if not station_id:
+            continue
+        try:
+            begin = datetime.strptime(str(row.get("BEGIN") or ""), "%Y%m%d").date()
+            end = datetime.strptime(str(row.get("END") or ""), "%Y%m%d").date()
+            lat = float(str(row.get("LAT") or "").strip())
+            lon = float(str(row.get("LON") or "").strip())
+        except (TypeError, ValueError):
+            continue
+        if begin > today or end < today:
+            continue
+        distance = math.hypot(lat - city.lat, lon - city.lon)
+        ranked.append((distance, row))
+    ranked.sort(key=lambda item: item[0])
+    return [row for _, row in ranked[:3]]
+
+
+def _fetch_noaa_isd_observed_daily_highs(city: CityConfig, *, lookback_days: int = 7) -> tuple[str | None, dict[str, float]]:
+    if not WEATHER_ENABLE_NOAA_ISD:
+        return None, {}
+    local_today = datetime.now(ZoneInfo(city.timezone_name)).date()
+    min_date = local_today - timedelta(days=max(1, int(lookback_days)))
+    candidates = _noaa_isd_candidate_stations(city)
+    for candidate in candidates:
+        station_id = _noaa_isd_station_id(candidate)
+        if not station_id:
+            continue
+        year = local_today.year
+        url = f"{NOAA_ISD_ACCESS_BASE_URL}/{year}/{station_id}.csv"
+        try:
+            text = _request_text(url, provider_name="noaa_isd", timeout=45.0)
+        except Exception:
+            continue
+        reader = csv.DictReader(text.splitlines())
+        by_date: dict[str, float] = {}
+        for row in reader:
+            if not isinstance(row, dict):
+                continue
+            timestamp = str(row.get("DATE") or "").strip()
+            if not timestamp:
+                continue
+            try:
+                observed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            local_date = observed_at.astimezone(ZoneInfo(city.timezone_name)).date()
+            if local_date < min_date or local_date > local_today:
+                continue
+            temp_f = _parse_noaa_isd_temperature_f(row.get("TMP"))
+            if temp_f is None:
+                continue
+            date_key = local_date.isoformat()
+            current = by_date.get(date_key)
+            rounded = round(float(temp_f), 2)
+            if current is None or rounded > current:
+                by_date[date_key] = rounded
+        if by_date:
+            return station_id, by_date
+    return None, {}
+
+
+def fetch_noaa_isd_observed_daily_highs(city: CityConfig, *, lookback_days: int = 7) -> tuple[str | None, dict[str, float]]:
+    return _fetch_noaa_isd_observed_daily_highs(city, lookback_days=lookback_days)
+
+
 def _fetch_nws_observed_daily_highs(city: CityConfig, *, limit: int = 48) -> dict[str, float]:
     station_id = _nws_station_id(city)
     if not station_id:
@@ -1848,6 +1975,129 @@ def _fetch_openweather_daily(city: CityConfig) -> list[ModelForecast]:
     return output
 
 
+def _fetch_weatherbit_daily(city: CityConfig) -> list[ModelForecast]:
+    if not WEATHERBIT_API_KEY:
+        return []
+    params = {
+        "lat": str(city.lat),
+        "lon": str(city.lon),
+        "key": WEATHERBIT_API_KEY,
+        "units": "I",
+        "days": "7",
+    }
+    url = f"https://api.weatherbit.io/v2.0/forecast/daily?{urllib.parse.urlencode(params)}"
+    data = _request_json(url, provider_name="weatherbit")
+    rows = (data or {}).get("data") or []
+    output: list[ModelForecast] = []
+    for item in rows[:7]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            output.append(
+                ModelForecast(
+                    model_name="weatherbit",
+                    date=str(item.get("datetime") or ""),
+                    high=float(item.get("max_temp")),
+                    low=float(item.get("min_temp")) if item.get("min_temp") is not None else None,
+                    source="weatherbit.io",
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return output
+
+
+def _fetch_meteosource_daily(city: CityConfig) -> list[ModelForecast]:
+    if not WEATHER_ENABLE_METEOSOURCE or not METEOSOURCE_API_KEY:
+        return []
+    params = {
+        "lat": str(city.lat),
+        "lon": str(city.lon),
+        "sections": "daily",
+        "timezone": city.timezone_name,
+        "language": "en",
+        "units": "imperial",
+        "key": METEOSOURCE_API_KEY,
+    }
+    url = f"https://www.meteosource.com/api/v1/free/point?{urllib.parse.urlencode(params)}"
+    data = _request_json(url, provider_name="meteosource")
+    daily = ((data or {}).get("daily") or {}).get("data") or []
+    output: list[ModelForecast] = []
+    for item in daily[:7]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            output.append(
+                ModelForecast(
+                    model_name="meteosource",
+                    date=str(item.get("day") or item.get("date") or ""),
+                    high=float(item.get("all_day", {}).get("temperature_max")),
+                    low=float(item.get("all_day", {}).get("temperature_min"))
+                    if item.get("all_day", {}).get("temperature_min") is not None
+                    else None,
+                    source="meteosource.com",
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return output
+
+
+def _fetch_met_norway_daily(city: CityConfig) -> list[ModelForecast]:
+    if not WEATHER_ENABLE_MET_NORWAY:
+        return []
+    params = {
+        "lat": str(city.lat),
+        "lon": str(city.lon),
+        "altitude": "0",
+    }
+    url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?{urllib.parse.urlencode(params)}"
+    data = _request_json(
+        url,
+        provider_name="met_norway",
+        headers={
+            "User-Agent": MET_NORWAY_USER_AGENT,
+            "Accept": "application/json",
+        },
+    )
+    series = (((data or {}).get("properties")) or {}).get("timeseries") or []
+    local_tz = ZoneInfo(city.timezone_name)
+    by_date: dict[str, dict[str, float]] = {}
+    for item in series:
+        if not isinstance(item, dict):
+            continue
+        timestamp = str(item.get("time") or "").strip()
+        if not timestamp:
+            continue
+        try:
+            observed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        local_date = observed_at.astimezone(local_tz).date().isoformat()
+        details = ((((item.get("data") or {}).get("instant")) or {}).get("details")) or {}
+        temp_c = details.get("air_temperature")
+        try:
+            temp_f = float(temp_c) * 9.0 / 5.0 + 32.0
+        except (TypeError, ValueError):
+            continue
+        current = by_date.setdefault(local_date, {"high": temp_f, "low": temp_f})
+        current["high"] = max(float(current["high"]), temp_f)
+        current["low"] = min(float(current["low"]), temp_f)
+    output: list[ModelForecast] = []
+    for date_key in sorted(by_date.keys())[:7]:
+        values = by_date[date_key]
+        output.append(
+            ModelForecast(
+                model_name="met_norway",
+                date=date_key,
+                high=round(float(values["high"]), 2),
+                low=round(float(values["low"]), 2),
+                source="api.met.no",
+            )
+        )
+    return output
+
+
 def fetch_all_model_forecasts(city: CityConfig) -> ForecastFetchBundle:
     results: dict[str, list[ModelForecast]] = {}
     failures: list[str] = []
@@ -1864,7 +2114,12 @@ def fetch_all_model_forecasts(city: CityConfig) -> ForecastFetchBundle:
         "weatherapi": _fetch_weatherapi_daily,
         "visualcrossing": _fetch_visualcrossing_daily,
         "openweather": _fetch_openweather_daily,
+        "weatherbit": _fetch_weatherbit_daily,
     }
+    if WEATHER_ENABLE_METEOSOURCE:
+        optional_fetchers["meteosource"] = _fetch_meteosource_daily
+    if WEATHER_ENABLE_MET_NORWAY:
+        optional_fetchers["met_norway"] = _fetch_met_norway_daily
     if WEATHER_ENABLE_HRRR and city.supports_hrrr:
         optional_fetchers["hrrr"] = _fetch_hrrr_daily
     disabled_optional: set[str] = {
