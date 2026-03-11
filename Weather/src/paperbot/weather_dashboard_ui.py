@@ -1380,6 +1380,126 @@ def _render_curve_panel(snapshot_curve: pd.DataFrame, live_open_positions: pd.Da
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _forecast_accuracy_frame(rows: list[dict]) -> pd.DataFrame:
+    frame = pd.DataFrame(rows or [])
+    if frame.empty:
+        return frame
+    for column in ("sample_count", "mae", "rmse", "bias", "within_1f_rate", "within_2f_rate"):
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame.sort_values(["mae", "rmse", "sample_count"], ascending=[True, True, False]).reset_index(drop=True)
+
+
+def _policy_recommendations_frame(rows: list[dict]) -> pd.DataFrame:
+    frame = pd.DataFrame(rows or [])
+    if frame.empty:
+        return frame
+    for column in ("sample_count", "wins", "losses", "avg_pnl_usd", "total_pnl_usd", "win_rate", "avg_edge", "avg_consensus", "avg_agreement_pct"):
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    order = {"block": 0, "caution": 1, "neutral": 2, "prefer": 3}
+    frame["_priority"] = frame["recommendation"].map(lambda value: order.get(str(value or "").lower(), 99))
+    return frame.sort_values(["_priority", "sample_count"], ascending=[True, False]).drop(columns=["_priority"]).reset_index(drop=True)
+
+
+def _render_forecast_accuracy_panel(rows: list[dict]) -> None:
+    frame = _forecast_accuracy_frame(rows)
+    st.markdown(
+        """
+        <div class="ops-panel">
+            <div class="ops-head">
+                <div class="ops-title">Forecast Metrics</div>
+                <div class="ops-badge">truth observed</div>
+            </div>
+            <div class="table-shell">
+                <div class="table-header" style="grid-template-columns: 1fr 0.8fr 0.8fr 0.8fr 0.8fr;">
+                    <div>Source</div>
+                    <div>MAE</div>
+                    <div>RMSE</div>
+                    <div>Bias</div>
+                    <div>Samples</div>
+                </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if frame.empty:
+        st.markdown('<div class="table-row" style="grid-template-columns: 1fr;"><div class="muted">Sem amostra suficiente.</div></div>', unsafe_allow_html=True)
+    else:
+        for _, row in frame.iterrows():
+            bias = float(row.get("bias") or 0.0)
+            bias_class = "num-positive" if bias >= 0 else "num-negative"
+            st.markdown(
+                f"""
+                <div class="table-row" style="grid-template-columns: 1fr 0.8fr 0.8fr 0.8fr 0.8fr;">
+                    <div>{str(row.get("source_name") or "--").upper()}</div>
+                    <div>{fmt_num(row.get("mae"))}</div>
+                    <div>{fmt_num(row.get("rmse"))}</div>
+                    <div class="{bias_class}">{fmt_num(row.get("bias"))}</div>
+                    <div>{int(row.get("sample_count") or 0)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+def _recommendation_pill_class(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "prefer":
+        return "pill-filled"
+    if normalized == "block":
+        return "pill-no"
+    if normalized == "caution":
+        return "pill-sell"
+    return "pill-open"
+
+
+def _render_policy_recommendations_panel(rows: list[dict]) -> None:
+    frame = _policy_recommendations_frame(rows)
+    st.markdown(
+        """
+        <div class="ops-panel">
+            <div class="ops-head">
+                <div class="ops-title">Policy Recommendations</div>
+                <div class="ops-badge">city / day_label</div>
+            </div>
+            <div class="table-shell">
+                <div class="table-header" style="grid-template-columns: 1.1fr 0.9fr 0.9fr 0.9fr 0.8fr;">
+                    <div>Segment</div>
+                    <div>Action</div>
+                    <div>Win Rate</div>
+                    <div>Avg P&L</div>
+                    <div>Samples</div>
+                </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if frame.empty:
+        st.markdown('<div class="table-row" style="grid-template-columns: 1fr;"><div class="muted">Sem recomendacoes suficientes.</div></div>', unsafe_allow_html=True)
+    else:
+        for _, row in frame.iterrows():
+            avg_pnl = float(row.get("avg_pnl_usd") or 0.0)
+            pnl_class = "num-positive" if avg_pnl >= 0 else "num-negative"
+            action = str(row.get("recommendation") or "neutral").upper()
+            rationale = str(row.get("rationale") or "--")
+            st.markdown(
+                f"""
+                <div class="table-row" style="grid-template-columns: 1.1fr 0.9fr 0.9fr 0.9fr 0.8fr;">
+                    <div class="market-col">
+                        <div class="market-name">{str(row.get("segment") or "--")}</div>
+                        <div class="market-meta">{rationale}</div>
+                    </div>
+                    <div><span class="pill {_recommendation_pill_class(action.lower())}">{action}</span></div>
+                    <div>{fmt_percent((float(row.get("win_rate") or 0.0) * 100.0))}</div>
+                    <div class="{pnl_class}">{_signed_usd(avg_pnl)}</div>
+                    <div>{int(row.get("sample_count") or 0)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
 def render_unified_dashboard(
     state: dict,
     *,
@@ -1389,6 +1509,7 @@ def render_unified_dashboard(
     effective_open_positions = normalize_open_positions(state.get("effective_open_positions", pd.DataFrame()))
     live_positions = state.get("live_positions", pd.DataFrame())
     live_snapshot_curve = state.get("live_snapshot_curve", pd.DataFrame())
+    prediction_summary = state.get("prediction_summary", {}) or {}
     wallet_snapshot = state.get("public_wallet_snapshot", {}) or {}
     portfolio_value, open_pnl = compute_open_position_totals(effective_open_positions)
     starting_capital, total_pnl, daily_pnl = _snapshot_net_worth_metrics(live_snapshot_curve)
@@ -1408,12 +1529,31 @@ def render_unified_dashboard(
         if daily_pnl is not None and total_value is not None and (total_value - float(daily_pnl)) not in (0, 0.0)
         else None
     )
+    live_wins = 0 if live_positions.empty else int((pd.to_numeric(state.get("live_resolved_positions", pd.DataFrame()).get("pnl_usd"), errors="coerce") > 0).sum()) if not state.get("live_resolved_positions", pd.DataFrame()).empty else 0
+    live_losses = 0 if state.get("live_resolved_positions", pd.DataFrame()).empty else int((pd.to_numeric(state.get("live_resolved_positions", pd.DataFrame()).get("pnl_usd"), errors="coerce") < 0).sum())
+    live_resolved = live_wins + live_losses
+    live_win_rate = round((live_wins / live_resolved) * 100.0, 2) if live_resolved > 0 else None
+    policy_allowed_summary = prediction_summary.get("policy_allowed", {}) if isinstance(prediction_summary, dict) else {}
+    bot_win_rate = policy_allowed_summary.get("win_rate_percent")
+    bot_sample_count = int(policy_allowed_summary.get("resolved_predictions") or 0)
     kpis = [
         _kpi_card_html("Total Value", fmt_usd(total_value), f"starting capital {fmt_usd(starting_capital)}"),
         _kpi_card_html("Cash Balance", fmt_usd(cash_balance), f"deployed: {fmt_usd(deployed)}"),
         _kpi_card_html("Daily P&L", _signed_usd(daily_pnl), fmt_percent(daily_pnl_pct), _value_class(daily_pnl)),
         _kpi_card_html("Total P&L", _signed_usd(total_pnl), fmt_percent(total_pnl_pct), _value_class(total_pnl)),
         _kpi_card_html("Open Positions", str(len(effective_open_positions)), "active markets"),
+        _kpi_card_html(
+            "Bot Win Rate",
+            fmt_percent(bot_win_rate),
+            f"{bot_sample_count} previsoes resolvidas",
+            _value_class((bot_win_rate or 0.0) - 50.0) if bot_win_rate is not None else "",
+        ),
+        _kpi_card_html(
+            "Live Win Rate",
+            fmt_percent(live_win_rate),
+            f"{live_resolved} trades resolvidos",
+            _value_class((live_win_rate or 0.0) - 50.0) if live_win_rate is not None else "",
+        ),
         _kpi_card_html("Daily Trades", str(daily_trade_count), "today"),
     ]
     st.markdown(f'<div class="kpi-grid">{"".join(kpis)}</div>', unsafe_allow_html=True)
@@ -1433,3 +1573,8 @@ def render_unified_dashboard(
         _recent_trades_fragment()
     st.markdown("</div>", unsafe_allow_html=True)
     _render_curve_panel(live_snapshot_curve, effective_open_positions)
+    metrics_left, metrics_right = st.columns(2, gap="large")
+    with metrics_left:
+        _render_forecast_accuracy_panel(state.get("forecast_accuracy_summary", []))
+    with metrics_right:
+        _render_policy_recommendations_panel(state.get("policy_recommendations", []))

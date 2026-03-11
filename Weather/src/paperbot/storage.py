@@ -325,6 +325,55 @@ class WeatherBotStorage:
                 ON market_history_snapshots(market_slug, captured_at);
                 CREATE INDEX IF NOT EXISTS idx_market_history_snapshots_event
                 ON market_history_snapshots(event_slug, captured_at);
+
+                CREATE TABLE IF NOT EXISTS forecast_source_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    city_key TEXT NOT NULL,
+                    city_name TEXT,
+                    day_label TEXT,
+                    date_str TEXT NOT NULL,
+                    event_slug TEXT NOT NULL,
+                    market_slug TEXT NOT NULL,
+                    market_id TEXT,
+                    bucket TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    forecast_temp_f REAL NOT NULL,
+                    effective_weight REAL,
+                    agreement_models INTEGER,
+                    total_models INTEGER,
+                    agreement_pct REAL,
+                    aligns_with_trade_side INTEGER,
+                    source_in_bucket INTEGER,
+                    source_delta_f REAL,
+                    raw_context_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_forecast_source_snapshots_run
+                ON forecast_source_snapshots(run_id, source_name);
+                CREATE INDEX IF NOT EXISTS idx_forecast_source_snapshots_city_date
+                ON forecast_source_snapshots(city_key, date_str, source_name);
+                CREATE INDEX IF NOT EXISTS idx_forecast_source_snapshots_market
+                ON forecast_source_snapshots(market_slug, source_name, captured_at);
+
+                CREATE TABLE IF NOT EXISTS station_observation_daily_highs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    captured_at TEXT NOT NULL,
+                    city_key TEXT NOT NULL,
+                    city_name TEXT,
+                    station_id TEXT,
+                    local_date TEXT NOT NULL,
+                    observed_high_f REAL NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'nws_station_observation',
+                    raw_context_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_station_observation_daily_highs_city_date
+                ON station_observation_daily_highs(city_key, local_date);
+                CREATE INDEX IF NOT EXISTS idx_station_observation_daily_highs_station
+                ON station_observation_daily_highs(station_id, local_date);
                 """
             )
             self._ensure_opportunities_columns(conn)
@@ -1236,6 +1285,58 @@ class WeatherBotStorage:
             "pnl_curve": [_row_to_dict(row) for row in pnl_curve],
         }
 
+    def prediction_summary(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            overall = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS resolved_predictions,
+                    SUM(CASE WHEN settled_price_cents > 0 THEN 1 ELSE 0 END) AS wins,
+                    SUM(CASE WHEN settled_price_cents = 0 THEN 1 ELSE 0 END) AS losses,
+                    ROUND(COALESCE(SUM(pnl_usd), 0), 4) AS total_pnl_usd
+                FROM scan_predictions
+                WHERE settled_price_cents IS NOT NULL
+                """
+            ).fetchone()
+            allowed = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS resolved_predictions,
+                    SUM(CASE WHEN settled_price_cents > 0 THEN 1 ELSE 0 END) AS wins,
+                    SUM(CASE WHEN settled_price_cents = 0 THEN 1 ELSE 0 END) AS losses,
+                    ROUND(COALESCE(SUM(pnl_usd), 0), 4) AS total_pnl_usd
+                FROM scan_predictions
+                WHERE settled_price_cents IS NOT NULL
+                  AND policy_allowed = 1
+                """
+            ).fetchone()
+
+        def _build_metrics(row: sqlite3.Row | None) -> dict[str, Any]:
+            if row is None:
+                return {
+                    "resolved_predictions": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "total_pnl_usd": 0.0,
+                    "win_rate_percent": None,
+                }
+            resolved = int(row["resolved_predictions"] or 0)
+            wins = int(row["wins"] or 0)
+            losses = int(row["losses"] or 0)
+            total_pnl = _safe_float(row["total_pnl_usd"]) or 0.0
+            return {
+                "resolved_predictions": resolved,
+                "wins": wins,
+                "losses": losses,
+                "total_pnl_usd": round(total_pnl, 4),
+                "win_rate_percent": round((wins / resolved) * 100.0, 4) if resolved > 0 else None,
+            }
+
+        return {
+            "overall": _build_metrics(overall),
+            "policy_allowed": _build_metrics(allowed),
+        }
+
     def recent_opportunity_ranges(
         self,
         keys: list[tuple[str, str]],
@@ -1578,3 +1679,236 @@ class WeatherBotStorage:
         for item in output:
             item["raw_json"] = json.loads(item.get("raw_json") or "{}")
         return output
+
+    def record_forecast_source_snapshots(self, snapshots: list[dict[str, Any]]) -> int:
+        if not snapshots:
+            return 0
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO forecast_source_snapshots (
+                    run_id, captured_at, city_key, city_name, day_label, date_str, event_slug, market_slug,
+                    market_id, bucket, side, source_name, forecast_temp_f, effective_weight, agreement_models,
+                    total_models, agreement_pct, aligns_with_trade_side, source_in_bucket, source_delta_f,
+                    raw_context_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.get("run_id"),
+                        item.get("captured_at"),
+                        item.get("city_key"),
+                        item.get("city_name"),
+                        item.get("day_label"),
+                        item.get("date_str"),
+                        item.get("event_slug"),
+                        item.get("market_slug"),
+                        item.get("market_id"),
+                        item.get("bucket"),
+                        item.get("side"),
+                        item.get("source_name"),
+                        item.get("forecast_temp_f"),
+                        item.get("effective_weight"),
+                        item.get("agreement_models"),
+                        item.get("total_models"),
+                        item.get("agreement_pct"),
+                        1 if item.get("aligns_with_trade_side") else 0,
+                        1 if item.get("source_in_bucket") else 0,
+                        item.get("source_delta_f"),
+                        _json_dumps(item.get("raw_context") or {}),
+                    )
+                    for item in snapshots
+                ],
+            )
+        return len(snapshots)
+
+    def list_forecast_source_snapshots(
+        self,
+        *,
+        run_id: str | None = None,
+        city_key: str | None = None,
+        source_name: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT *
+            FROM forecast_source_snapshots
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if city_key:
+            clauses.append("city_key = ?")
+            params.append(city_key)
+        if source_name:
+            clauses.append("source_name = ?")
+            params.append(source_name)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY captured_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        output = [_row_to_dict(row) for row in rows]
+        for item in output:
+            item["raw_context"] = json.loads(item.pop("raw_context_json", "{}") or "{}")
+            item["aligns_with_trade_side"] = bool(item.get("aligns_with_trade_side"))
+            item["source_in_bucket"] = bool(item.get("source_in_bucket"))
+        return output
+
+    def record_station_observation_daily_highs(self, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO station_observation_daily_highs (
+                    captured_at, city_key, city_name, station_id, local_date, observed_high_f, source, raw_context_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        item.get("captured_at"),
+                        item.get("city_key"),
+                        item.get("city_name"),
+                        item.get("station_id"),
+                        item.get("local_date"),
+                        item.get("observed_high_f"),
+                        item.get("source") or "nws_station_observation",
+                        _json_dumps(item.get("raw_context") or {}),
+                    )
+                    for item in rows
+                ],
+            )
+        return len(rows)
+
+    def list_station_observation_daily_highs(
+        self,
+        *,
+        city_key: str | None = None,
+        local_date: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT *
+            FROM station_observation_daily_highs
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if city_key:
+            clauses.append("city_key = ?")
+            params.append(city_key)
+        if local_date:
+            clauses.append("local_date = ?")
+            params.append(local_date)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY captured_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        output = [_row_to_dict(row) for row in rows]
+        for item in output:
+            item["raw_context"] = json.loads(item.pop("raw_context_json", "{}") or "{}")
+        return output
+
+    def forecast_accuracy_summary(
+        self,
+        *,
+        min_samples: int = 5,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    f.source_name,
+                    COUNT(*) AS sample_count,
+                    ROUND(AVG(ABS(f.forecast_temp_f - s.observed_high_f)), 4) AS mae,
+                    AVG((f.forecast_temp_f - s.observed_high_f) * (f.forecast_temp_f - s.observed_high_f)) AS mse_raw,
+                    ROUND(AVG(f.forecast_temp_f - s.observed_high_f), 4) AS bias,
+                    ROUND(AVG(CASE WHEN ABS(f.forecast_temp_f - s.observed_high_f) <= 1.0 THEN 1.0 ELSE 0.0 END), 4) AS within_1f_rate,
+                    ROUND(AVG(CASE WHEN ABS(f.forecast_temp_f - s.observed_high_f) <= 2.0 THEN 1.0 ELSE 0.0 END), 4) AS within_2f_rate
+                FROM forecast_source_snapshots f
+                INNER JOIN station_observation_daily_highs s
+                    ON s.city_key = f.city_key
+                   AND s.local_date = f.date_str
+                GROUP BY f.source_name
+                HAVING COUNT(*) >= ?
+                ORDER BY mae ASC, mse_raw ASC, ABS(bias) ASC, sample_count DESC
+                LIMIT ?
+                """,
+                (max(1, int(min_samples)), max(1, int(limit))),
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = _row_to_dict(row)
+            mse_raw = _safe_float(item.pop("mse_raw"))
+            item["rmse"] = round((mse_raw ** 0.5), 4) if mse_raw is not None and mse_raw >= 0 else None
+            output.append(item)
+        return output
+
+    def policy_recommendations_summary(
+        self,
+        *,
+        min_samples: int = 25,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    city_key,
+                    day_label,
+                    COUNT(*) AS sample_count,
+                    SUM(CASE WHEN settled_price_cents >= 99.999 THEN 1 ELSE 0 END) AS wins,
+                    SUM(CASE WHEN settled_price_cents <= 0.001 THEN 1 ELSE 0 END) AS losses,
+                    ROUND(AVG(COALESCE(pnl_usd, 0)), 4) AS avg_pnl_usd,
+                    ROUND(SUM(COALESCE(pnl_usd, 0)), 4) AS total_pnl_usd,
+                    ROUND(AVG(CASE WHEN settled_price_cents >= 99.999 THEN 1.0 ELSE 0.0 END), 4) AS win_rate,
+                    ROUND(AVG(COALESCE(edge, 0)), 4) AS avg_edge,
+                    ROUND(AVG(COALESCE(consensus_score, 0)), 4) AS avg_consensus,
+                    ROUND(AVG(COALESCE(agreement_pct, 0)), 4) AS avg_agreement_pct
+                FROM scan_predictions
+                WHERE resolved_at IS NOT NULL
+                GROUP BY city_key, day_label
+                HAVING COUNT(*) >= ?
+                ORDER BY sample_count DESC, avg_pnl_usd DESC
+                LIMIT ?
+                """,
+                (max(1, int(min_samples)), max(1, int(limit * 3))),
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = _row_to_dict(row)
+            avg_pnl = _safe_float(item.get("avg_pnl_usd")) or 0.0
+            win_rate = _safe_float(item.get("win_rate")) or 0.0
+            city_key = str(item.get("city_key") or "").upper()
+            day_label = str(item.get("day_label") or "").lower()
+            if avg_pnl <= -0.5 or win_rate <= 0.10:
+                recommendation = "block"
+                rationale = "underperforming"
+            elif avg_pnl < 0.0 or win_rate < 0.40:
+                recommendation = "caution"
+                rationale = "weak pnl_or_hit_rate"
+            elif avg_pnl > 0.15 and win_rate >= 0.55:
+                recommendation = "prefer"
+                rationale = "strong pnl_and_hit_rate"
+            else:
+                recommendation = "neutral"
+                rationale = "mixed"
+            item["segment"] = f"{city_key}/{day_label}"
+            item["recommendation"] = recommendation
+            item["rationale"] = rationale
+            output.append(item)
+        recommendation_order = {"block": 0, "caution": 1, "neutral": 2, "prefer": 3}
+        output.sort(
+            key=lambda item: (
+                recommendation_order.get(str(item.get("recommendation")), 99),
+                -int(item.get("sample_count") or 0),
+                float(item.get("avg_pnl_usd") or 0.0),
+            )
+        )
+        return output[: max(1, int(limit))]

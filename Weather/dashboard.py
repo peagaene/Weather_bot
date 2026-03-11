@@ -73,6 +73,10 @@ def load_positions(limit: int = 500) -> list[dict]:
 def load_latest_dashboard_state() -> dict:
     runs = runs_frame(load_runs())
     positions = positions_frame(load_positions())
+    storage = get_storage()
+    prediction_summary = storage.prediction_summary()
+    forecast_accuracy_summary = storage.forecast_accuracy_summary(min_samples=5, limit=8)
+    policy_recommendations = storage.policy_recommendations_summary(min_samples=25, limit=8)
     live_positions = positions[positions["mode"] == "live"].copy() if not positions.empty else pd.DataFrame()
     live_open_positions = live_positions[live_positions["status"] == "open"].copy() if not live_positions.empty else pd.DataFrame()
     live_resolved_positions = live_positions[live_positions["status"] == "resolved"].copy() if not live_positions.empty else pd.DataFrame()
@@ -84,6 +88,9 @@ def load_latest_dashboard_state() -> dict:
         "live_positions": live_positions,
         "live_open_positions": live_open_positions,
         "live_resolved_positions": live_resolved_positions,
+        "prediction_summary": prediction_summary,
+        "forecast_accuracy_summary": forecast_accuracy_summary,
+        "policy_recommendations": policy_recommendations,
         "latest_details": latest_details,
     }
 
@@ -213,6 +220,9 @@ def _load_dashboard_state() -> dict:
         "live_positions": state["live_positions"],
         "live_open_positions": state["live_open_positions"],
         "live_resolved_positions": state["live_resolved_positions"],
+        "prediction_summary": state.get("prediction_summary", {}),
+        "forecast_accuracy_summary": state.get("forecast_accuracy_summary", []),
+        "policy_recommendations": state.get("policy_recommendations", []),
         "wallet_snapshot": wallet_snapshot,
         "public_wallet_snapshot": effective_wallet_snapshot,
         "polymarket_positions": polymarket_positions,

@@ -41,6 +41,10 @@ WEATHER_SOURCE_WEIGHT_PROFILE_PATH = os.getenv(
     "WEATHER_SOURCE_WEIGHT_PROFILE_PATH",
     str(Path(__file__).resolve().parents[2] / "export" / "analysis" / "source_weight_profile.json"),
 )
+WEATHER_TRUTH_WEIGHT_PROFILE_PATH = os.getenv(
+    "WEATHER_TRUTH_WEIGHT_PROFILE_PATH",
+    str(Path(__file__).resolve().parents[2] / "export" / "analysis" / "truth_weight_profile.json"),
+)
 WEATHER_PROVIDER_CACHE_DIR = Path(
     os.getenv(
         "WEATHER_PROVIDER_CACHE_DIR",
@@ -298,6 +302,21 @@ def _load_source_weight_profile() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+@lru_cache(maxsize=1)
+def _load_truth_weight_profile() -> dict[str, Any]:
+    path_value = os.getenv("WEATHER_TRUTH_WEIGHT_PROFILE_PATH", WEATHER_TRUTH_WEIGHT_PROFILE_PATH).strip()
+    if not path_value:
+        return {}
+    try:
+        with open(path_value, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _merge_weight_map(target: dict[str, float], source: dict[str, Any] | None) -> None:
     if not isinstance(source, dict):
         return
@@ -366,6 +385,57 @@ def _resolve_source_weight_multipliers(city: CityConfig, horizon_days: int | Non
     return output
 
 
+def _resolve_truth_weight_multipliers(city: CityConfig, horizon_days: int | None) -> dict[str, float]:
+    payload = _load_truth_weight_profile()
+    if not payload:
+        return {}
+    output: dict[str, float] = {}
+    day_label = "today" if horizon_days == 0 else "tomorrow" if horizon_days == 1 else "day2" if horizon_days == 2 else None
+
+    global_cfg = payload.get("global") if isinstance(payload, dict) else None
+    _merge_weight_map(output, (global_cfg or {}).get("model_weight_multiplier") if isinstance(global_cfg, dict) else None)
+
+    cities_cfg = payload.get("cities") if isinstance(payload, dict) else None
+    city_cfg = cities_cfg.get(city.key) if isinstance(cities_cfg, dict) else None
+    if isinstance(city_cfg, dict):
+        _merge_weight_map(output, city_cfg.get("model_weight_multiplier"))
+        day_cfg = city_cfg.get("day_labels")
+        if isinstance(day_cfg, dict) and day_label:
+            selected = day_cfg.get(day_label)
+            if isinstance(selected, dict):
+                _merge_weight_map(output, selected.get("model_weight_multiplier"))
+
+    regimes_cfg = payload.get("regimes") if isinstance(payload, dict) else None
+    if isinstance(regimes_cfg, dict) and city.regime_tags:
+        by_model: dict[str, list[float]] = {}
+        for regime_tag in city.regime_tags:
+            regime_cfg = regimes_cfg.get(str(regime_tag))
+            if not isinstance(regime_cfg, dict):
+                continue
+            regime_weights = regime_cfg.get("model_weight_multiplier")
+            if isinstance(regime_weights, dict):
+                for model_name, raw_value in regime_weights.items():
+                    try:
+                        by_model.setdefault(str(model_name), []).append(float(raw_value))
+                    except (TypeError, ValueError):
+                        continue
+            day_cfg = regime_cfg.get("day_labels")
+            if isinstance(day_cfg, dict) and day_label:
+                selected = day_cfg.get(day_label)
+                if isinstance(selected, dict):
+                    day_weights = selected.get("model_weight_multiplier")
+                    if isinstance(day_weights, dict):
+                        for model_name, raw_value in day_weights.items():
+                            try:
+                                by_model.setdefault(str(model_name), []).append(float(raw_value))
+                            except (TypeError, ValueError):
+                                continue
+        for model_name, values in by_model.items():
+            output[model_name] = float(output.get(model_name, 1.0)) * _geometric_mean(values)
+
+    return output
+
+
 def _apply_model_calibration(
     city: CityConfig,
     horizon_days: int | None,
@@ -373,6 +443,7 @@ def _apply_model_calibration(
 ) -> tuple[dict[str, float], dict[str, float]]:
     bias_map, weight_multiplier_map = _resolve_calibration(city.key, horizon_days)
     source_weight_multiplier_map = _resolve_source_weight_multipliers(city, horizon_days)
+    truth_weight_multiplier_map = _resolve_truth_weight_multipliers(city, horizon_days)
     adjusted_predictions: dict[str, float] = {}
     effective_weights: dict[str, float] = {}
     for model_name, value in predictions.items():
@@ -384,6 +455,7 @@ def _apply_model_calibration(
             float(MODEL_WEIGHTS.get(model_name, 1.0))
             * float(weight_multiplier_map.get(model_name, 1.0))
             * float(source_weight_multiplier_map.get(model_name, 1.0))
+            * float(truth_weight_multiplier_map.get(model_name, 1.0))
             * _horizon_weight_multiplier(model_name, horizon_days),
             ),
         )
@@ -1433,6 +1505,10 @@ def _nws_station_id(city: CityConfig) -> str | None:
     return MOS_STATION_CODES.get(city.key)
 
 
+def nws_station_id(city: CityConfig) -> str | None:
+    return _nws_station_id(city)
+
+
 def _fetch_nws_observed_daily_highs(city: CityConfig, *, limit: int = 48) -> dict[str, float]:
     station_id = _nws_station_id(city)
     if not station_id:
@@ -1472,6 +1548,10 @@ def _fetch_nws_observed_daily_highs(city: CityConfig, *, limit: int = 48) -> dic
         if current is None or temp_f > current:
             by_date[observed_local_date] = round(temp_f, 2)
     return by_date
+
+
+def fetch_nws_observed_daily_highs(city: CityConfig, *, limit: int = 48) -> dict[str, float]:
+    return _fetch_nws_observed_daily_highs(city, limit=limit)
 
 
 def _fetch_nws_hourly_daily_highs(forecast_hourly: dict[str, Any], city: CityConfig) -> dict[str, float]:

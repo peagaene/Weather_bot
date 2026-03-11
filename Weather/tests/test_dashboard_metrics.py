@@ -14,7 +14,13 @@ from paperbot.dashboard_metrics import (
     compute_open_position_totals,
     normalize_open_positions,
 )
-from paperbot.weather_dashboard_ui import _build_recent_trades_frame, _recent_trade_status_class, _snapshot_net_worth_metrics
+from paperbot.weather_dashboard_ui import (
+    _build_recent_trades_frame,
+    _forecast_accuracy_frame,
+    _policy_recommendations_frame,
+    _recent_trade_status_class,
+    _snapshot_net_worth_metrics,
+)
 
 
 def test_normalize_open_positions_prefers_value_minus_cost() -> None:
@@ -119,3 +125,25 @@ def test_recent_trade_status_class_keeps_open_separate_from_filled() -> None:
     assert _recent_trade_status_class("OPEN") == "pill-open"
     assert _recent_trade_status_class("FILLED") == "pill-filled"
     assert _recent_trade_status_class("RESOLVED") == "pill-closed"
+
+
+def test_forecast_accuracy_frame_sorts_by_lowest_mae() -> None:
+    frame = _forecast_accuracy_frame(
+        [
+            {"source_name": "gfs", "mae": 2.5, "rmse": 3.0, "bias": -1.0, "sample_count": 20},
+            {"source_name": "nws", "mae": 1.2, "rmse": 1.5, "bias": 0.2, "sample_count": 10},
+        ]
+    )
+
+    assert list(frame["source_name"]) == ["nws", "gfs"]
+
+
+def test_policy_recommendations_frame_prioritizes_blocks_before_prefers() -> None:
+    frame = _policy_recommendations_frame(
+        [
+            {"segment": "SEA/tomorrow", "recommendation": "prefer", "sample_count": 40},
+            {"segment": "MIA/today", "recommendation": "block", "sample_count": 100},
+        ]
+    )
+
+    assert list(frame["segment"]) == ["MIA/today", "SEA/tomorrow"]

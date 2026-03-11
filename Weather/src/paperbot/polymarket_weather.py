@@ -52,6 +52,7 @@ class WeatherOpportunity:
     last_trade_price: float | None
     order_min_size: float | None
     model_predictions: dict[str, float]
+    effective_weights: dict[str, float] | None = None
     agreement_models: int = 0
     total_models: int = 0
     agreement_pct: float = 0.0
@@ -659,6 +660,7 @@ def _build_opportunity(
         last_trade_price=bucket.last_trade_price,
         order_min_size=bucket.order_min_size,
         model_predictions=ensemble.predictions,
+        effective_weights=dict(getattr(ensemble, "effective_weights", None) or {}) or None,
         agreement_models=agreement_models,
         total_models=total_models,
         agreement_pct=round(agreement_pct, 2),

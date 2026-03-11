@@ -17,6 +17,7 @@ from paperbot.weather_models import (
     _hrrr_daily_cache_key,
     _cache_key_for_name,
     _load_source_weight_profile,
+    _load_truth_weight_profile,
     ModelForecast,
     _fetch_nws_daily,
     _hrrr_step_schedule,
@@ -29,10 +30,13 @@ from paperbot.weather_models import (
 class WeatherModelsEnsembleTests(unittest.TestCase):
     def setUp(self) -> None:
         self._source_weight_patcher = patch("paperbot.weather_models._resolve_source_weight_multipliers", return_value={})
+        self._truth_weight_patcher = patch("paperbot.weather_models._resolve_truth_weight_multipliers", return_value={})
         self._source_weight_patcher.start()
+        self._truth_weight_patcher.start()
 
     def tearDown(self) -> None:
         self._source_weight_patcher.stop()
+        self._truth_weight_patcher.stop()
 
     def test_robust_blend_stays_close_when_models_agree(self) -> None:
         city = CITY_CONFIGS[0]
@@ -123,6 +127,37 @@ class WeatherModelsEnsembleTests(unittest.TestCase):
         self.assertIsNotNone(ensemble)
         assert ensemble is not None
         self.assertAlmostEqual(ensemble.effective_weights["gfs"], 1.056, places=3)
+
+    def test_truth_weight_profile_is_composed_with_existing_weights(self) -> None:
+        city = next(item for item in CITY_CONFIGS if item.key == "SEA")
+        forecasts = {
+            "nws": [ModelForecast("nws", "2026-03-08", 72.5)],
+            "gfs": [ModelForecast("gfs", "2026-03-08", 73.0)],
+        }
+        self._truth_weight_patcher.stop()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_path = Path(temp_dir) / "truth_weight_profile.json"
+            profile_path.write_text(
+                """
+                {
+                  "global": {"model_weight_multiplier": {"gfs": 0.9}},
+                  "cities": {"SEA": {"model_weight_multiplier": {"gfs": 0.95}, "day_labels": {"today": {"model_weight_multiplier": {"gfs": 0.92}}}}},
+                  "regimes": {"coastal": {"model_weight_multiplier": {"gfs": 0.98}}}
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            _load_truth_weight_profile.cache_clear()
+            try:
+                with patch.dict("os.environ", {"WEATHER_TRUTH_WEIGHT_PROFILE_PATH": str(profile_path)}, clear=False):
+                    ensemble = build_ensemble_for_date(city, forecasts, "2026-03-08", horizon_days=0)
+            finally:
+                _load_truth_weight_profile.cache_clear()
+                self._truth_weight_patcher.start()
+
+        self.assertIsNotNone(ensemble)
+        assert ensemble is not None
+        self.assertAlmostEqual(ensemble.effective_weights["gfs"], 1.0 * 0.9 * 0.95 * 0.92 * 0.98 * 0.85, places=3)
 
     def test_short_horizon_weights_favor_near_term_sources(self) -> None:
         city = CITY_CONFIGS[0]

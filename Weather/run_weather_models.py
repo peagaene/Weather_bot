@@ -24,9 +24,16 @@ from paperbot.reconciliation import sync_open_positions, sync_prediction_resolut
 from paperbot.selection import explain_blocked_opportunities, filter_opportunities, summarize_filter_rejections
 from paperbot.storage import WeatherBotStorage
 from paperbot.trading_state import FileLock, TradingStateStore
-from paperbot.weather_models import _load_source_weight_profile
+from paperbot.weather_models import (
+    _load_source_weight_profile,
+    _load_truth_weight_profile,
+    fetch_nws_observed_daily_highs,
+    nws_station_id,
+)
+from paperbot.degendoppler import CITY_CONFIGS, _parse_bucket_range
 from run_prediction_analysis import generate_prediction_analysis
 from run_source_weight_analysis import generate_source_weight_analysis
+from run_truth_weight_analysis import generate_truth_weight_analysis
 
 load_app_env(ROOT)
 
@@ -102,6 +109,42 @@ def _ensure_source_weight_profile_fresh() -> None:
         print(f"source weight profile atualizado: {profile_path}")
     except Exception as exc:
         print(f"AVISO: falha ao atualizar source weight profile: {_sanitize_text(exc)}")
+
+
+def _ensure_truth_weight_profile_fresh() -> None:
+    enabled = str(os.getenv("WEATHER_TRUTH_WEIGHT_AUTO_REFRESH", "1")).strip().lower() not in {"0", "false", "no"}
+    if not enabled:
+        return
+    db_path = _resolve_path(os.getenv("WEATHER_DB_PATH", "export/db/weather_bot.db"))
+    if not db_path.exists():
+        return
+    analysis_path = _resolve_path(
+        os.getenv("WEATHER_TRUTH_WEIGHT_ANALYSIS_PATH", "export/analysis/truth_weight_analysis.json")
+    )
+    profile_path = _resolve_path(
+        os.getenv("WEATHER_TRUTH_WEIGHT_PROFILE_PATH", "export/analysis/truth_weight_profile.json")
+    )
+    max_age_hours = max(1.0, float(os.getenv("WEATHER_TRUTH_WEIGHT_PROFILE_MAX_AGE_HOURS", "24") or 24))
+    max_age_seconds = max_age_hours * 3600.0
+    min_samples = max(1, int(os.getenv("WEATHER_TRUTH_WEIGHT_MIN_SAMPLES", "20") or 20))
+    top_segments = max(1, int(os.getenv("WEATHER_TRUTH_WEIGHT_TOP_SEGMENTS", "10") or 10))
+    now = time.time()
+    if profile_path.exists():
+        age_seconds = max(0.0, now - profile_path.stat().st_mtime)
+        if age_seconds <= max_age_seconds:
+            return
+    try:
+        generate_truth_weight_analysis(
+            db_path=db_path,
+            min_samples=min_samples,
+            top_segments=top_segments,
+            output_json=analysis_path,
+            profile_json=profile_path,
+        )
+        _load_truth_weight_profile.cache_clear()
+        print(f"truth weight profile atualizado: {profile_path}")
+    except Exception as exc:
+        print(f"AVISO: falha ao atualizar truth weight profile: {_sanitize_text(exc)}")
 
 
 def _build_history_rows(run_id: str, selected: list, plans: list, executions: list, generated_at: str) -> list[dict]:
@@ -236,6 +279,116 @@ def _count_ambiguous_live_orders(storage: WeatherBotStorage) -> int:
     return total
 
 
+def _bucket_alignment_context(bucket_label: str, forecast_temp_f: float, side: str) -> tuple[bool | None, bool | None, float | None]:
+    min_value, max_value = _parse_bucket_range(bucket_label)
+    if min_value is None and max_value is None:
+        return None, None, None
+    numeric = float(forecast_temp_f)
+    in_bucket = True
+    delta = 0.0
+    if min_value is not None and numeric < float(min_value):
+        in_bucket = False
+        delta = float(min_value) - numeric
+    if max_value is not None and numeric > float(max_value):
+        in_bucket = False
+        delta = max(delta, numeric - float(max_value))
+    aligns_with_trade_side = in_bucket if side == "YES" else (not in_bucket)
+    return aligns_with_trade_side, in_bucket, round(delta, 4)
+
+
+def _build_forecast_source_snapshot_rows(
+    *,
+    run_id: str,
+    captured_at: str,
+    raw_predictions: list[dict],
+) -> list[dict]:
+    rows: list[dict] = []
+    for item in raw_predictions:
+        model_predictions = item.get("model_predictions")
+        if not isinstance(model_predictions, dict):
+            continue
+        effective_weights = item.get("effective_weights")
+        if not isinstance(effective_weights, dict):
+            effective_weights = {}
+        for source_name, forecast_temp in model_predictions.items():
+            try:
+                forecast_temp_f = float(forecast_temp)
+            except (TypeError, ValueError):
+                continue
+            aligns_with_trade_side, source_in_bucket, source_delta_f = _bucket_alignment_context(
+                str(item.get("bucket") or ""),
+                forecast_temp_f,
+                str(item.get("side") or ""),
+            )
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "captured_at": captured_at,
+                    "city_key": item.get("city_key"),
+                    "city_name": item.get("city_name"),
+                    "day_label": item.get("day_label"),
+                    "date_str": item.get("date_str"),
+                    "event_slug": item.get("event_slug"),
+                    "market_slug": item.get("market_slug"),
+                    "market_id": item.get("market_id"),
+                    "bucket": item.get("bucket"),
+                    "side": item.get("side"),
+                    "source_name": source_name,
+                    "forecast_temp_f": round(forecast_temp_f, 4),
+                    "effective_weight": effective_weights.get(source_name),
+                    "agreement_models": item.get("agreement_models"),
+                    "total_models": item.get("total_models"),
+                    "agreement_pct": item.get("agreement_pct"),
+                    "aligns_with_trade_side": aligns_with_trade_side,
+                    "source_in_bucket": source_in_bucket,
+                    "source_delta_f": source_delta_f,
+                    "raw_context": {
+                        "signal_tier": item.get("signal_tier"),
+                        "confidence_tier": item.get("confidence_tier"),
+                        "policy_allowed": bool(item.get("policy_allowed")),
+                        "policy_reason": item.get("policy_reason"),
+                        "price_source": item.get("price_source"),
+                        "reference_price_cents": item.get("reference_price_cents"),
+                        "coverage_score": item.get("coverage_score"),
+                    },
+                }
+            )
+    return rows
+
+
+def _build_station_observation_rows(*, captured_at: str) -> list[dict]:
+    rows: list[dict] = []
+    for city in CITY_CONFIGS:
+        station_id = nws_station_id(city)
+        if not station_id:
+            continue
+        try:
+            observed_daily_highs = fetch_nws_observed_daily_highs(city, limit=72)
+        except Exception:
+            continue
+        for local_date, observed_high_f in observed_daily_highs.items():
+            try:
+                numeric_high = float(observed_high_f)
+            except (TypeError, ValueError):
+                continue
+            rows.append(
+                {
+                    "captured_at": captured_at,
+                    "city_key": city.key,
+                    "city_name": city.display_name,
+                    "station_id": station_id,
+                    "local_date": local_date,
+                    "observed_high_f": round(numeric_high, 4),
+                    "source": "nws_station_observation",
+                    "raw_context": {
+                        "timezone_name": city.timezone_name,
+                        "regime_tags": list(city.regime_tags),
+                    },
+                }
+            )
+    return rows
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Scan Polymarket weather markets using direct forecast models.")
     parser.add_argument("--days-ahead", type=int, default=3, help="How many day buckets to scan: 1-3.")
@@ -277,6 +430,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     _ensure_policy_profile_fresh()
     _ensure_source_weight_profile_fresh()
+    _ensure_truth_weight_profile_fresh()
 
     if args.live and args.no_history:
         parser.error("--live requires persistent history/storage; remove --no-history.")
@@ -503,6 +657,20 @@ def main(argv: list[str] | None = None) -> None:
             order_plans=payload["order_plans"],
             executions=payload["executions"],
         )
+        try:
+            forecast_source_rows = _build_forecast_source_snapshot_rows(
+                run_id=run_id,
+                captured_at=generated_at,
+                raw_predictions=[item.as_dict() for item in raw_opportunities],
+            )
+            payload["forecast_source_snapshot_count"] = storage.record_forecast_source_snapshots(forecast_source_rows)
+        except Exception as exc:
+            payload["forecast_source_snapshot_error"] = _sanitize_text(exc)
+        try:
+            station_rows = _build_station_observation_rows(captured_at=generated_at)
+            payload["station_observation_count"] = storage.record_station_observation_daily_highs(station_rows)
+        except Exception as exc:
+            payload["station_observation_error"] = _sanitize_text(exc)
         if args.live:
             payload["live_order_sync"] = sync_live_exchange_state(storage)
             if not payload["live_order_sync"].get("ok"):
@@ -514,6 +682,8 @@ def main(argv: list[str] | None = None) -> None:
             payload["resolution_sync"] = sync_summary
             prediction_sync_summary = sync_prediction_resolutions(storage)
             payload["prediction_resolution_sync"] = prediction_sync_summary
+
+    export_payload = _build_safe_share_payload(payload) if args.safe_share else payload
 
     if args.json:
         print(json.dumps(export_payload, indent=2))
