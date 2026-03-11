@@ -1,5 +1,7 @@
 # Provider Status
 
+Documento auxiliar. O plano principal agora está em [MASTER_ROADMAP.md](C:/Bot_poly/Weather/MASTER_ROADMAP.md).
+
 ## Como ler
 - `Funcionando`: já existe no código e participa do pipeline atual
 - `Implementado, validar`: já existe no código, mas depende de chave/configuração/runtime

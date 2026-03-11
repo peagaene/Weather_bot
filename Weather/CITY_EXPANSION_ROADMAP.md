@@ -1,5 +1,7 @@
 # City Expansion Roadmap
 
+Documento auxiliar. O plano principal agora está em [MASTER_ROADMAP.md](C:/Bot_poly/Weather/MASTER_ROADMAP.md).
+
 ## Current rollout state
 - All current Polymarket weather cities are configured in observation.
 - Non-US cities are `observation only` by default and are blocked from live by policy.

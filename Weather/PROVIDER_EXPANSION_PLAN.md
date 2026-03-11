@@ -1,5 +1,7 @@
 # Provider Expansion Plan
 
+Documento auxiliar. O plano principal agora está em [MASTER_ROADMAP.md](C:/Bot_poly/Weather/MASTER_ROADMAP.md).
+
 ## Goal
 Expand weather coverage safely without degrading live execution quality.
 

@@ -1,5 +1,7 @@
 ## Data Enrichment Plan
 
+Documento auxiliar. O plano principal agora está em [MASTER_ROADMAP.md](C:/Bot_poly/Weather/MASTER_ROADMAP.md).
+
 Objetivo: enriquecer o banco local com histórico reutilizável para calibrar o bot sem alterar a decisão operacional do scan atual.
 
 ### Prioridade

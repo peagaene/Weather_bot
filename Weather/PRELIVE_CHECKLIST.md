@@ -1,5 +1,7 @@
 # Pre-Live Checklist
 
+Documento auxiliar. O plano principal agora está em [MASTER_ROADMAP.md](C:/Bot_poly/Weather/MASTER_ROADMAP.md).
+
 ## Bloqueadores para live
 
 - `python -m pytest -q` precisa passar no runtime operacional.

@@ -1,5 +1,7 @@
 # DegenDoppler Feature Parity
 
+Documento auxiliar. O plano principal agora está em [MASTER_ROADMAP.md](C:/Bot_poly/Weather/MASTER_ROADMAP.md).
+
 ## Objetivo
 
 Levar o bot principal a, no minimo, o mesmo conjunto funcional observado no DegenDoppler para weather markets, sem degradar o operacional live.
