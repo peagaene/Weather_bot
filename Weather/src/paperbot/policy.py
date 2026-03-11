@@ -300,6 +300,36 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     tomorrow_risky_override_min_consensus = float(
         os.getenv("WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_MIN_CONSENSUS", "0.68")
     )
+    strong_city_risky_override_enabled = str(
+        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_ENABLED", "1")
+    ).strip().lower() not in {"0", "false", "no"}
+    strong_city_risky_override_cities = {
+        item.strip().upper()
+        for item in str(os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_CITIES", "SEA")).split(",")
+        if item.strip()
+    }
+    strong_city_risky_override_signal_tiers = {
+        item.strip().upper()
+        for item in str(os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_SIGNAL_TIERS", "B")).split(",")
+        if item.strip()
+    }
+    strong_city_risky_override_confidence = {
+        item.strip().lower()
+        for item in str(os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_CONFIDENCE", "safe")).split(",")
+        if item.strip()
+    }
+    strong_city_risky_override_min_agreement_pct = float(
+        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_MIN_AGREEMENT_PCT", "80")
+    )
+    strong_city_risky_override_min_edge = float(
+        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_MIN_EDGE", "20")
+    )
+    strong_city_risky_override_min_worst_case_edge = float(
+        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_MIN_WORST_CASE_EDGE", "15")
+    )
+    strong_city_risky_override_min_consensus = float(
+        os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_MIN_CONSENSUS", "0.75")
+    )
     fallback_enabled = str(os.getenv("WEATHER_POLICY_ALLOW_FALLBACK_COVERAGE", "1")).strip().lower() not in {"0", "false", "no"}
     fallback_min_models = int(os.getenv("WEATHER_POLICY_FALLBACK_MIN_VALID_MODELS", "4") or 4)
     fallback_min_worst_case_edge = float(os.getenv("WEATHER_POLICY_FALLBACK_MIN_WORST_CASE_EDGE", "8") or 8)
@@ -339,6 +369,17 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
         and min_agreeing_model_edge >= tomorrow_risky_override_min_worst_case_edge
         and consensus >= tomorrow_risky_override_min_consensus
     )
+    strong_city_risky_override = (
+        strong_city_risky_override_enabled
+        and city_key in strong_city_risky_override_cities
+        and day_label == "tomorrow"
+        and confidence_tier in strong_city_risky_override_confidence
+        and signal_tier in strong_city_risky_override_signal_tiers
+        and effective_agreement_pct >= strong_city_risky_override_min_agreement_pct
+        and edge >= strong_city_risky_override_min_edge
+        and min_agreeing_model_edge >= strong_city_risky_override_min_worst_case_edge
+        and consensus >= strong_city_risky_override_min_consensus
+    )
     if not effective_coverage_ok:
         return PolicyDecision(False, "coverage_not_ok", risk_label, risk_score)
     if city_key and city_key in blocked_city_keys:
@@ -352,7 +393,7 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
         return PolicyDecision(False, "signal_tier_not_actionable", risk_label, risk_score)
     if confidence_tier == "risky":
         return PolicyDecision(False, "confidence_risky", risk_label, risk_score)
-    if risk_label == "Risky" and not tomorrow_risky_override:
+    if risk_label == "Risky" and not tomorrow_risky_override and not strong_city_risky_override:
         return PolicyDecision(False, "risk_label_risky", risk_label, risk_score)
     if risk_label == "Moderate" and effective_signal_tier not in {"A+", "A", "B"}:
         return PolicyDecision(False, "risk_label_not_safe", risk_label, risk_score)

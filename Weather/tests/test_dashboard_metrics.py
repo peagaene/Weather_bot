@@ -65,6 +65,19 @@ def test_build_live_snapshot_curve_prefers_net_worth_delta() -> None:
     assert list(curve["pnl_curve_label"]) == ["PnL da curva", "PnL da curva"]
 
 
+def test_build_live_snapshot_curve_smooths_transient_spike() -> None:
+    curve = build_live_snapshot_curve(
+        [
+            {"captured_at": "2026-03-09T01:00:00+00:00", "total_net_worth_usd": 100.0},
+            {"captured_at": "2026-03-09T01:01:00+00:00", "total_net_worth_usd": 10.0},
+            {"captured_at": "2026-03-09T01:02:00+00:00", "total_net_worth_usd": 101.0},
+        ]
+    )
+
+    assert round(float(curve.iloc[1]["total_net_worth_usd"]), 2) == 100.5
+    assert round(float(curve.iloc[1]["pnl_curve_usd"]), 2) == 0.5
+
+
 def test_snapshot_net_worth_metrics_uses_full_wallet_curve() -> None:
     curve = build_live_snapshot_curve(
         [

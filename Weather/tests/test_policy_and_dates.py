@@ -272,6 +272,79 @@ class PolicyAndDatesTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "signal_tier_not_actionable")
 
+    def test_policy_allows_strong_city_tomorrow_risky_override_for_sea(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "SEA",
+                "day_label": "tomorrow",
+                "bucket": "52-53°F",
+                "consensus_score": 0.79,
+                "spread": 1.45,
+                "sigma": 3.8,
+                "ensemble_prediction": 50.3,
+                "confidence_tier": "safe",
+                "signal_tier": "B",
+                "edge": 32.2,
+                "min_agreeing_model_edge": 19.9,
+                "price_cents": 59.0,
+                "coverage_ok": True,
+                "coverage_score": 0.94,
+                "agreement_models": 10,
+                "total_models": 12,
+                "agreement_pct": 83.33,
+                "degraded_reason": None,
+                "executable_quality_score": 0.75,
+                "data_quality_score": 1.0,
+            },
+        )()
+        with patch.dict(
+            "os.environ",
+            {"WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_ENABLED": "0"},
+            clear=False,
+        ):
+            decision = apply_trade_policy(opportunity)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
+        self.assertIn(decision.risk_label, {"Moderate", "Risky"})
+
+    def test_policy_does_not_apply_strong_city_override_to_non_whitelisted_city(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "DAL",
+                "day_label": "tomorrow",
+                "bucket": "74-75°F",
+                "consensus_score": 0.79,
+                "spread": 1.45,
+                "sigma": 3.8,
+                "ensemble_prediction": 74.3,
+                "confidence_tier": "safe",
+                "signal_tier": "B",
+                "edge": 32.2,
+                "min_agreeing_model_edge": 19.9,
+                "price_cents": 59.0,
+                "coverage_ok": True,
+                "coverage_score": 0.94,
+                "agreement_models": 10,
+                "total_models": 12,
+                "agreement_pct": 83.33,
+                "degraded_reason": None,
+                "executable_quality_score": 0.75,
+                "data_quality_score": 1.0,
+            },
+        )()
+        with patch.dict(
+            "os.environ",
+            {"WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_ENABLED": "0"},
+            clear=False,
+        ):
+            decision = apply_trade_policy(opportunity)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "risk_label_risky")
+
     def test_effective_price_bounds_allows_higher_tomorrow_cap_for_safe_b_tier(self) -> None:
         opportunity = type(
             "Opportunity",

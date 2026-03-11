@@ -1116,7 +1116,6 @@ def _render_pagination_controls(*, session_key: str, current_page: int, total_pa
     with left:
         if st.button("Anterior", key=f"{key_prefix}_prev", disabled=current_page <= 0, width="stretch"):
             st.session_state[session_key] = max(0, current_page - 1)
-            st.rerun()
     with mid:
         st.markdown(
             f'<div class="muted" style="text-align:center; padding-top:0.45rem;">Pagina {current_page + 1} de {total_pages}</div>',
@@ -1125,7 +1124,6 @@ def _render_pagination_controls(*, session_key: str, current_page: int, total_pa
     with right:
         if st.button("Proxima", key=f"{key_prefix}_next", disabled=current_page >= total_pages - 1, width="stretch"):
             st.session_state[session_key] = min(total_pages - 1, current_page + 1)
-            st.rerun()
 
 
 def _render_open_positions_ops_panel(open_positions: pd.DataFrame) -> None:
@@ -1325,17 +1323,8 @@ def _render_curve_panel(snapshot_curve: pd.DataFrame, live_open_positions: pd.Da
     starting_capital, total_pnl, daily_pnl = _snapshot_net_worth_metrics(curve)
     latest_net_worth = pd.to_numeric(curve.get("total_net_worth_usd"), errors="coerce").dropna()
     pnl_curve = pd.to_numeric(curve.get("pnl_curve_usd"), errors="coerce").fillna(0.0)
-    open_pnl = compute_open_position_totals(live_open_positions)[1] if not live_open_positions.empty else 0.0
+    _ = compute_open_position_totals(live_open_positions)[1] if not live_open_positions.empty else 0.0
     latest_value = float(latest_net_worth.iloc[-1]) if not latest_net_worth.empty else None
-    curve_min = float(pnl_curve.min()) if not pnl_curve.empty else 0.0
-    curve_max = float(pnl_curve.max()) if not pnl_curve.empty else 0.0
-    legend_cards = [
-        _curve_legend_card_html("Wallet Value", fmt_usd(latest_value), "patrimonio total"),
-        _curve_legend_card_html("Total P&L", _signed_usd(total_pnl), "desde o primeiro snapshot"),
-        _curve_legend_card_html("Daily P&L", _signed_usd(daily_pnl), "variacao do ultimo dia"),
-        _curve_legend_card_html("Open P&L", _signed_usd(open_pnl), f"range {fmt_usd(curve_min)} a {fmt_usd(curve_max)}"),
-    ]
-    st.markdown(f'<div class="curve-legend-grid">{"".join(legend_cards)}</div>', unsafe_allow_html=True)
     times = pd.to_datetime(curve["captured_at"], errors="coerce")
     figure = go.Figure()
     figure.add_hline(y=0, line_width=1, line_color="rgba(127,146,191,0.35)")
@@ -1384,6 +1373,10 @@ def _render_curve_panel(snapshot_curve: pd.DataFrame, live_open_positions: pd.Da
     figure.update_xaxes(showgrid=False, color="#93a7d4", title_font=dict(size=12))
     figure.update_yaxes(gridcolor="rgba(147,167,212,0.12)", zeroline=False, color="#93a7d4", title_font=dict(size=12))
     st.plotly_chart(figure, width="stretch")
+    if latest_value is not None and total_pnl is not None and daily_pnl is not None:
+        st.caption(
+            f"Ultimo patrimonio {fmt_usd(latest_value)} | total {_signed_usd(total_pnl)} | diario {_signed_usd(daily_pnl)}"
+        )
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -1427,8 +1420,16 @@ def render_unified_dashboard(
     st.markdown('<div class="ops-grid">', unsafe_allow_html=True)
     left, right = st.columns(2, gap="large")
     with left:
-        _render_open_positions_ops_panel(effective_open_positions)
+        @st.fragment
+        def _open_positions_fragment() -> None:
+            _render_open_positions_ops_panel(effective_open_positions)
+
+        _open_positions_fragment()
     with right:
-        _render_recent_trades_ops_panel(state)
+        @st.fragment
+        def _recent_trades_fragment() -> None:
+            _render_recent_trades_ops_panel(state)
+
+        _recent_trades_fragment()
     st.markdown("</div>", unsafe_allow_html=True)
     _render_curve_panel(live_snapshot_curve, effective_open_positions)

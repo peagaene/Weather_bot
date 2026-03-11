@@ -99,8 +99,24 @@ def build_live_snapshot_curve(snapshot_rows: list[dict[str, Any]]) -> pd.DataFra
 
     valid_net_worth = net_worth.dropna()
     if not valid_net_worth.empty:
-        baseline = float(valid_net_worth.iloc[0])
-        frame["pnl_curve_usd"] = net_worth - baseline
+        sanitized_net_worth = net_worth.copy()
+        for index in range(1, len(sanitized_net_worth) - 1):
+            prev_value = _to_float(sanitized_net_worth.iloc[index - 1])
+            current_value = _to_float(sanitized_net_worth.iloc[index])
+            next_value = _to_float(sanitized_net_worth.iloc[index + 1])
+            if prev_value is None or current_value is None or next_value is None:
+                continue
+            if prev_value <= 0 or next_value <= 0:
+                continue
+            drop_threshold = max(25.0, prev_value * 0.25)
+            recovery_threshold = max(12.0, prev_value * 0.12)
+            if abs(current_value - prev_value) < drop_threshold:
+                continue
+            if abs(next_value - prev_value) <= recovery_threshold:
+                sanitized_net_worth.iloc[index] = (prev_value + next_value) / 2.0
+        baseline = float(pd.to_numeric(sanitized_net_worth, errors="coerce").dropna().iloc[0])
+        frame["total_net_worth_usd"] = sanitized_net_worth
+        frame["pnl_curve_usd"] = sanitized_net_worth - baseline
         frame["pnl_curve_label"] = "PnL da curva"
     elif stored_open_pnl.notna().any():
         frame["pnl_curve_usd"] = stored_open_pnl
