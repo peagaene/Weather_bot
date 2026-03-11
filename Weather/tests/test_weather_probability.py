@@ -84,6 +84,30 @@ class WeatherProbabilityTests(unittest.TestCase):
         )
         self.assertEqual(names, ["ecmwf", "gfs"])
 
+    def test_bucket_probability_supports_celsius_market_bounds(self) -> None:
+        ensemble = EnsembleForecast(
+            city_key="PAR",
+            city_name="Paris",
+            date="2026-03-08",
+            predictions={"best_match": 53.6, "ecmwf": 54.1, "gfs": 52.8},
+            blended_high=53.8,
+            min_high=52.8,
+            max_high=54.1,
+            spread=0.7,
+            sigma=1.5,
+            consensus_score=0.9,
+            valid_model_count=3,
+            coverage_ok=True,
+            degraded_reason=None,
+            provider_failures=[],
+        )
+
+        in_bucket_prob = _ensemble_bucket_probability(ensemble, 11.5, 12.5, "C")
+        far_bucket_prob = _ensemble_bucket_probability(ensemble, 17.5, 18.5, "C")
+
+        self.assertGreater(in_bucket_prob, 0.5)
+        self.assertLess(far_bucket_prob, 0.05)
+
 
 if __name__ == "__main__":
     unittest.main()

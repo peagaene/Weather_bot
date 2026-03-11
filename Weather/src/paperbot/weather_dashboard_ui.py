@@ -8,6 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from paperbot.degendoppler import parse_bucket_bounds as parse_market_bucket_bounds
 from paperbot.dashboard_metrics import (
     build_live_snapshot_curve,
     compute_open_position_totals,
@@ -159,6 +160,11 @@ def parse_bucket_bounds_from_label(label: str) -> tuple[float | None, float | No
     if below_match:
         return None, float(below_match.group(1))
     return None, None
+
+
+def parse_bucket_bounds_from_label(label: str) -> tuple[float | None, float | None]:
+    low, high, _ = parse_market_bucket_bounds(label)
+    return low, high
 
 
 def compute_risk_label(row: pd.Series, range_info: dict | None) -> tuple[str, float]:

@@ -38,6 +38,12 @@ class CityConfig:
     lat: float
     lon: float
     timezone_name: str
+    market_temp_unit: str = "F"
+    official_station_code: str | None = None
+    supports_nws: bool = False
+    supports_mos: bool = False
+    supports_hrrr: bool = False
+    live_enabled: bool = True
     coastal: bool = False
     marine_influenced: bool = False
     urban_core: bool = False
@@ -52,6 +58,11 @@ CITY_CONFIGS: tuple[CityConfig, ...] = (
         40.76,
         -73.86,
         "America/New_York",
+        market_temp_unit="F",
+        official_station_code="KLGA",
+        supports_nws=True,
+        supports_mos=True,
+        supports_hrrr=True,
         coastal=True,
         marine_influenced=True,
         urban_core=True,
@@ -64,6 +75,11 @@ CITY_CONFIGS: tuple[CityConfig, ...] = (
         41.98,
         -87.91,
         "America/Chicago",
+        market_temp_unit="F",
+        official_station_code="KORD",
+        supports_nws=True,
+        supports_mos=True,
+        supports_hrrr=True,
         coastal=True,
         marine_influenced=False,
         urban_core=True,
@@ -76,6 +92,11 @@ CITY_CONFIGS: tuple[CityConfig, ...] = (
         33.64,
         -84.41,
         "America/New_York",
+        market_temp_unit="F",
+        official_station_code="KATL",
+        supports_nws=True,
+        supports_mos=True,
+        supports_hrrr=True,
         coastal=False,
         marine_influenced=False,
         urban_core=True,
@@ -88,6 +109,11 @@ CITY_CONFIGS: tuple[CityConfig, ...] = (
         47.44,
         -122.30,
         "America/Los_Angeles",
+        market_temp_unit="F",
+        official_station_code="KSEA",
+        supports_nws=True,
+        supports_mos=True,
+        supports_hrrr=True,
         coastal=True,
         marine_influenced=True,
         urban_core=True,
@@ -100,6 +126,11 @@ CITY_CONFIGS: tuple[CityConfig, ...] = (
         25.85,
         -80.24,
         "America/New_York",
+        market_temp_unit="F",
+        official_station_code="KMIA",
+        supports_nws=True,
+        supports_mos=True,
+        supports_hrrr=True,
         coastal=True,
         marine_influenced=True,
         urban_core=True,
@@ -112,12 +143,187 @@ CITY_CONFIGS: tuple[CityConfig, ...] = (
         32.85,
         -96.87,
         "America/Chicago",
+        market_temp_unit="F",
+        official_station_code="KDFW",
+        supports_nws=True,
+        supports_mos=True,
+        supports_hrrr=True,
+        coastal=False,
+        marine_influenced=False,
+        urban_core=True,
+        regime_tags=("inland", "urban"),
+    ),
+    CityConfig(
+        "SEL",
+        "Seoul",
+        "seoul",
+        37.5665,
+        126.9780,
+        "Asia/Seoul",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=True,
+        marine_influenced=True,
+        urban_core=True,
+        regime_tags=("coastal", "marine", "urban"),
+    ),
+    CityConfig(
+        "WLG",
+        "Wellington",
+        "wellington",
+        -41.2866,
+        174.7756,
+        "Pacific/Auckland",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=True,
+        marine_influenced=True,
+        urban_core=True,
+        regime_tags=("coastal", "marine", "urban"),
+    ),
+    CityConfig(
+        "BUE",
+        "Buenos Aires",
+        "buenos-aires",
+        -34.6037,
+        -58.3816,
+        "America/Argentina/Buenos_Aires",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=True,
+        marine_influenced=True,
+        urban_core=True,
+        regime_tags=("coastal", "marine", "urban"),
+    ),
+    CityConfig(
+        "PAR",
+        "Paris",
+        "paris",
+        48.8566,
+        2.3522,
+        "Europe/Paris",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=False,
+        marine_influenced=False,
+        urban_core=True,
+        regime_tags=("inland", "urban"),
+    ),
+    CityConfig(
+        "LON",
+        "London",
+        "london",
+        51.5072,
+        -0.1276,
+        "Europe/London",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=False,
+        marine_influenced=True,
+        urban_core=True,
+        regime_tags=("marine", "urban"),
+    ),
+    CityConfig(
+        "ANK",
+        "Ankara",
+        "ankara",
+        39.9334,
+        32.8597,
+        "Europe/Istanbul",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=False,
+        marine_influenced=False,
+        urban_core=True,
+        regime_tags=("inland", "urban"),
+    ),
+    CityConfig(
+        "SAO",
+        "Sao Paulo",
+        "sao-paulo",
+        -23.5505,
+        -46.6333,
+        "America/Sao_Paulo",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=False,
+        marine_influenced=False,
+        urban_core=True,
+        regime_tags=("inland", "urban"),
+    ),
+    CityConfig(
+        "TOR",
+        "Toronto",
+        "toronto",
+        43.6532,
+        -79.3832,
+        "America/Toronto",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=True,
+        marine_influenced=False,
+        urban_core=True,
+        regime_tags=("coastal_like_lake", "urban"),
+    ),
+    CityConfig(
+        "TOK",
+        "Tokyo",
+        "tokyo",
+        35.6762,
+        139.6503,
+        "Asia/Tokyo",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=True,
+        marine_influenced=True,
+        urban_core=True,
+        regime_tags=("coastal", "marine", "urban"),
+    ),
+    CityConfig(
+        "LKO",
+        "Lucknow",
+        "lucknow",
+        26.8467,
+        80.9462,
+        "Asia/Kolkata",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=False,
+        marine_influenced=False,
+        urban_core=True,
+        regime_tags=("inland", "urban"),
+    ),
+    CityConfig(
+        "TLV",
+        "Tel Aviv",
+        "tel-aviv",
+        32.0853,
+        34.7818,
+        "Asia/Jerusalem",
+        market_temp_unit="C",
+        live_enabled=False,
+        coastal=True,
+        marine_influenced=True,
+        urban_core=True,
+        regime_tags=("coastal", "marine", "urban"),
+    ),
+    CityConfig(
+        "MUC",
+        "Munich",
+        "munich",
+        48.1372,
+        11.5756,
+        "Europe/Berlin",
+        market_temp_unit="C",
+        live_enabled=False,
         coastal=False,
         marine_influenced=False,
         urban_core=True,
         regime_tags=("inland", "urban"),
     ),
 )
+
+CITY_CONFIG_BY_KEY: dict[str, CityConfig] = {item.key: item for item in CITY_CONFIGS}
 
 
 @dataclass
@@ -214,6 +420,70 @@ def _slug_for(city: CityConfig, target_date: datetime) -> str:
     return f"highest-temperature-in-{city.market_city}-on-{month}-{target_date.day}-{target_date.year}"
 
 
+def normalize_market_temp_unit(unit: str | None, *, default: str = "F") -> str:
+    normalized = str(unit or "").strip().upper()
+    if normalized.startswith("C"):
+        return "C"
+    if normalized.startswith("F"):
+        return "F"
+    return default.strip().upper() or "F"
+
+
+def infer_market_temp_unit(label: str, *, default: str = "F") -> str:
+    text = str(label or "").upper()
+    if "°C" in text or "Â°C" in text or "CELSIUS" in text:
+        return "C"
+    if "°F" in text or "Â°F" in text or "FAHRENHEIT" in text:
+        return "F"
+    return normalize_market_temp_unit(default, default=default)
+
+
+def convert_temperature(value: float | int | None, from_unit: str | None, to_unit: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    source_unit = normalize_market_temp_unit(from_unit)
+    target_unit = normalize_market_temp_unit(to_unit)
+    if source_unit == target_unit:
+        return numeric
+    if source_unit == "F" and target_unit == "C":
+        return (numeric - 32.0) * 5.0 / 9.0
+    if source_unit == "C" and target_unit == "F":
+        return (numeric * 9.0 / 5.0) + 32.0
+    return numeric
+
+
+def parse_bucket_bounds(label: str, *, default_unit: str = "F") -> tuple[float | None, float | None, str]:
+    unit = infer_market_temp_unit(label, default=default_unit)
+    cleaned = (
+        str(label or "")
+        .replace("Â°F", "")
+        .replace("Â°C", "")
+        .replace("°F", "")
+        .replace("°C", "")
+        .replace("F", "")
+        .replace("C", "")
+        .strip()
+        .lower()
+    )
+    if "or below" in cleaned or "or lower" in cleaned:
+        number = int("".join(ch for ch in cleaned if ch.isdigit()) or "0")
+        return None, float(number), unit
+    if "or above" in cleaned or "or higher" in cleaned:
+        number = int("".join(ch for ch in cleaned if ch.isdigit()) or "0")
+        return float(number), None, unit
+    if "-" in cleaned:
+        left, right = cleaned.split("-", 1)
+        left_num = int("".join(ch for ch in left if ch.isdigit()) or "0")
+        right_num = int("".join(ch for ch in right if ch.isdigit()) or "0")
+        return float(left_num), float(right_num), unit
+    number = int("".join(ch for ch in cleaned if ch.isdigit()) or "0")
+    return float(number), float(number), unit
+
+
 def _parse_bucket_range(label: str) -> tuple[int | None, int | None]:
     cleaned = label.replace("°F", "").replace("F", "").strip().lower()
     if "or below" in cleaned or "or lower" in cleaned:
@@ -229,6 +499,14 @@ def _parse_bucket_range(label: str) -> tuple[int | None, int | None]:
         return left_num, right_num
     number = int("".join(ch for ch in cleaned if ch.isdigit()) or "0")
     return number, number
+
+
+def _parse_bucket_range_with_unit(label: str) -> tuple[int | None, int | None]:
+    low, high, _ = parse_bucket_bounds(label)
+    return (int(low) if low is not None else None), (int(high) if high is not None else None)
+
+
+_parse_bucket_range = _parse_bucket_range_with_unit
 
 
 def _parse_open_meteo_forecast(city: CityConfig) -> list[ForecastPoint]:

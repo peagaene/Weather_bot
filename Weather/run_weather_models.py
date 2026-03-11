@@ -27,6 +27,7 @@ from paperbot.trading_state import FileLock, TradingStateStore
 from paperbot.weather_models import (
     _load_source_weight_profile,
     _load_truth_weight_profile,
+    fetch_meteostat_observed_daily_highs,
     fetch_nws_observed_daily_highs,
     nws_station_id,
 )
@@ -359,33 +360,58 @@ def _build_forecast_source_snapshot_rows(
 def _build_station_observation_rows(*, captured_at: str) -> list[dict]:
     rows: list[dict] = []
     for city in CITY_CONFIGS:
-        station_id = nws_station_id(city)
-        if not station_id:
-            continue
-        try:
-            observed_daily_highs = fetch_nws_observed_daily_highs(city, limit=72)
-        except Exception:
-            continue
-        for local_date, observed_high_f in observed_daily_highs.items():
+        if city.supports_nws:
+            station_id = nws_station_id(city)
+            if station_id:
+                try:
+                    observed_daily_highs = fetch_nws_observed_daily_highs(city, limit=72)
+                except Exception:
+                    observed_daily_highs = {}
+                for local_date, observed_high_f in observed_daily_highs.items():
+                    try:
+                        numeric_high = float(observed_high_f)
+                    except (TypeError, ValueError):
+                        continue
+                    rows.append(
+                        {
+                            "captured_at": captured_at,
+                            "city_key": city.key,
+                            "city_name": city.display_name,
+                            "station_id": station_id,
+                            "local_date": local_date,
+                            "observed_high_f": round(numeric_high, 4),
+                            "source": "nws_station_observation",
+                            "raw_context": {
+                                "timezone_name": city.timezone_name,
+                                "regime_tags": list(city.regime_tags),
+                            },
+                        }
+                    )
+        elif city.market_temp_unit == "C":
             try:
-                numeric_high = float(observed_high_f)
-            except (TypeError, ValueError):
-                continue
-            rows.append(
-                {
-                    "captured_at": captured_at,
-                    "city_key": city.key,
-                    "city_name": city.display_name,
-                    "station_id": station_id,
-                    "local_date": local_date,
-                    "observed_high_f": round(numeric_high, 4),
-                    "source": "nws_station_observation",
-                    "raw_context": {
-                        "timezone_name": city.timezone_name,
-                        "regime_tags": list(city.regime_tags),
-                    },
-                }
-            )
+                station_id, observed_daily_highs = fetch_meteostat_observed_daily_highs(city, lookback_days=7)
+            except Exception:
+                station_id, observed_daily_highs = None, {}
+            for local_date, observed_high_f in observed_daily_highs.items():
+                try:
+                    numeric_high = float(observed_high_f)
+                except (TypeError, ValueError):
+                    continue
+                rows.append(
+                    {
+                        "captured_at": captured_at,
+                        "city_key": city.key,
+                        "city_name": city.display_name,
+                        "station_id": station_id or f"point:{city.lat:.4f},{city.lon:.4f}",
+                        "local_date": local_date,
+                        "observed_high_f": round(numeric_high, 4),
+                        "source": "meteostat_daily_observation",
+                        "raw_context": {
+                            "timezone_name": city.timezone_name,
+                            "regime_tags": list(city.regime_tags),
+                        },
+                    }
+                )
     return rows
 
 

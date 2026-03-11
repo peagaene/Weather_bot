@@ -12,7 +12,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .degendoppler import CITY_CONFIGS, CityConfig, MONTH_NAMES, MarketBucket, _parse_bucket_range, _safe_float
+from .degendoppler import (
+    CITY_CONFIGS,
+    CityConfig,
+    MONTH_NAMES,
+    MarketBucket,
+    _parse_bucket_range,
+    _safe_float,
+    convert_temperature,
+    infer_market_temp_unit,
+)
 from .probability_calibration import apply_probability_calibration
 from .weather_models import EnsembleForecast, fetch_city_ensembles
 
@@ -294,16 +303,27 @@ def _fee_adjusted_price(price_cents: float) -> float:
 
 
 def _bucket_bounds(bucket: MarketBucket) -> tuple[float, float]:
+    bucket_unit = infer_market_temp_unit(bucket.label)
     label = bucket.label.lower()
     if "below" in label or "lower" in label:
         upper = (bucket.max_value if bucket.max_value is not None else 20) + 0.5
-        return -100.0, float(upper)
+        return (-100.0 if bucket_unit == "F" else -80.0), float(upper)
     if "above" in label or "higher" in label:
         lower = (bucket.min_value if bucket.min_value is not None else 50) - 0.5
-        return float(lower), 200.0
+        return float(lower), (200.0 if bucket_unit == "F" else 120.0)
     if bucket.min_value is not None and bucket.max_value is not None:
         return float(bucket.min_value) - 0.5, float(bucket.max_value) + 0.5
-    return -100.0, 200.0
+    return (-100.0 if bucket_unit == "F" else -80.0), (200.0 if bucket_unit == "F" else 120.0)
+
+
+def _convert_predictions_to_bucket_unit(predictions: dict[str, float], bucket_unit: str) -> dict[str, float]:
+    converted: dict[str, float] = {}
+    for model_name, value in predictions.items():
+        converted_value = convert_temperature(value, "F", bucket_unit)
+        if converted_value is None:
+            continue
+        converted[model_name] = float(converted_value)
+    return converted
 
 
 def _gaussian_bucket_probability(low: float, high: float, mean: float, sigma: float) -> float:
@@ -332,20 +352,30 @@ def _empirical_bucket_probability(samples: list[float], low: float, high: float)
     return hits / total
 
 
-def _ensemble_bucket_probability(ensemble: EnsembleForecast, low: float, high: float) -> float:
-    gaussian_prob = _gaussian_bucket_probability(low, high, ensemble.blended_high, ensemble.sigma)
+def _ensemble_bucket_probability(ensemble: EnsembleForecast, low: float, high: float, bucket_unit: str = "F") -> float:
+    blended_high = float(convert_temperature(ensemble.blended_high, "F", bucket_unit) or ensemble.blended_high)
+    gaussian_prob = _gaussian_bucket_probability(low, high, blended_high, ensemble.sigma)
 
     deterministic_values: list[float] = []
     for value in ensemble.predictions.values():
         try:
-            deterministic_values.append(float(value))
+            converted = convert_temperature(value, "F", bucket_unit)
+            if converted is None:
+                continue
+            deterministic_values.append(float(converted))
         except (TypeError, ValueError):
             continue
     deterministic_vote = _empirical_bucket_probability(deterministic_values, low, high)
 
     family_probabilities: list[float] = []
     for family_values in (getattr(ensemble, "probabilistic_family_highs", None) or {}).values():
-        probability = _empirical_bucket_probability(list(family_values), low, high)
+        converted_family_values = [
+            float(converted)
+            for value in family_values
+            for converted in [convert_temperature(value, "F", bucket_unit)]
+            if converted is not None
+        ]
+        probability = _empirical_bucket_probability(converted_family_values, low, high)
         if probability is not None:
             family_probabilities.append(probability)
     probabilistic_prob = (
@@ -372,6 +402,7 @@ def _model_edge_statistics(
     *,
     low: float,
     high: float,
+    bucket_unit: str = "F",
     side: str,
     break_even_price: float,
     horizon_days: int | None,
@@ -381,7 +412,10 @@ def _model_edge_statistics(
     total_models = 0
     for value in ensemble.predictions.values():
         try:
-            predicted_high = float(value)
+            converted = convert_temperature(value, "F", bucket_unit)
+            if converted is None:
+                continue
+            predicted_high = float(converted)
         except (TypeError, ValueError):
             continue
         total_models += 1
@@ -516,12 +550,16 @@ def _model_side_agreement_pct(
     low: float,
     high: float,
     side: str,
+    bucket_unit: str = "F",
 ) -> tuple[int, int, float]:
     agree = 0
     total = 0
     for value in predictions.values():
         try:
-            predicted_high = float(value)
+            converted = convert_temperature(value, "F", bucket_unit)
+            if converted is None:
+                continue
+            predicted_high = float(converted)
         except (TypeError, ValueError):
             continue
         total += 1
@@ -538,11 +576,15 @@ def _agreeing_model_names(
     low: float,
     high: float,
     side: str,
+    bucket_unit: str = "F",
 ) -> list[str]:
     agreeing: list[str] = []
     for model_name, value in predictions.items():
         try:
-            predicted_high = float(value)
+            converted = convert_temperature(value, "F", bucket_unit)
+            if converted is None:
+                continue
+            predicted_high = float(converted)
         except (TypeError, ValueError):
             continue
         predicted_yes = low <= predicted_high <= high
@@ -589,13 +631,16 @@ def _build_opportunity(
     horizon_days: int | None,
 ) -> WeatherOpportunity:
     low, high = _bucket_bounds(bucket)
+    bucket_unit = infer_market_temp_unit(bucket.label, default=city.market_temp_unit)
+    market_predictions = _convert_predictions_to_bucket_unit(ensemble.predictions, bucket_unit)
     agreement_models, total_models, agreement_pct = _model_side_agreement_pct(
         ensemble.predictions,
         low,
         high,
         side,
+        bucket_unit,
     )
-    agreeing_model_names = _agreeing_model_names(ensemble.predictions, low, high, side)
+    agreeing_model_names = _agreeing_model_names(ensemble.predictions, low, high, side, bucket_unit)
     agreement_summary = (
         f"{agreement_models}/{total_models}"
         if total_models > 0
@@ -606,6 +651,7 @@ def _build_opportunity(
         ensemble,
         low=low,
         high=high,
+        bucket_unit=bucket_unit,
         side=side,
         break_even_price=break_even_price,
         horizon_days=horizon_days,
@@ -648,7 +694,7 @@ def _build_opportunity(
         price_cents=round(price_cents, 4),
         model_prob=round(model_prob, 4),
         market_prob=round(market_prob, 4),
-        ensemble_prediction=ensemble.blended_high,
+        ensemble_prediction=round(float(convert_temperature(ensemble.blended_high, "F", bucket_unit) or ensemble.blended_high), 2),
         weighted_score=round(execution_priority_score, 4),
         consensus_score=ensemble.consensus_score,
         spread=ensemble.spread,
@@ -659,7 +705,7 @@ def _build_opportunity(
         best_ask=bucket.best_ask,
         last_trade_price=bucket.last_trade_price,
         order_min_size=bucket.order_min_size,
-        model_predictions=ensemble.predictions,
+        model_predictions=market_predictions,
         effective_weights=dict(getattr(ensemble, "effective_weights", None) or {}) or None,
         agreement_models=agreement_models,
         total_models=total_models,
@@ -726,7 +772,8 @@ def score_market_scan(
 
     for bucket in scan.buckets:
         low, high = _bucket_bounds(bucket)
-        raw_model_prob_yes = _ensemble_bucket_probability(ensemble, low, high)
+        bucket_unit = infer_market_temp_unit(bucket.label, default=city.market_temp_unit)
+        raw_model_prob_yes = _ensemble_bucket_probability(ensemble, low, high, bucket_unit)
         calibrated_probability = apply_probability_calibration(
             raw_model_prob_yes,
             city_key=city.key,

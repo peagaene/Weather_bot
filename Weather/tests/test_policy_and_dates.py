@@ -23,6 +23,11 @@ class PolicyAndDatesTests(unittest.TestCase):
         self.assertEqual(parse_bucket_bounds("46°F or higher"), (46.0, None))
         self.assertEqual(parse_bucket_bounds("45°F or below"), (None, 45.0))
 
+    def test_parse_bucket_bounds_supports_celsius_labels(self) -> None:
+        self.assertEqual(parse_bucket_bounds("12-13°C"), (12.0, 13.0))
+        self.assertEqual(parse_bucket_bounds("15°C or higher"), (15.0, None))
+        self.assertEqual(parse_bucket_bounds("9°C or below"), (None, 9.0))
+
     def test_local_target_dates_use_city_timezone(self) -> None:
         reference = datetime(2026, 3, 9, 1, 30, tzinfo=timezone.utc)
         sea = next(city for city in CITY_CONFIGS if city.key == "SEA")
@@ -151,6 +156,34 @@ class PolicyAndDatesTests(unittest.TestCase):
         decision = apply_trade_policy(opportunity)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "city_blocked_historical_underperformance")
+
+    def test_policy_blocks_observation_only_city_for_live(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "PAR",
+                "day_label": "tomorrow",
+                "bucket": "12-13°C",
+                "consensus_score": 0.82,
+                "spread": 1.0,
+                "sigma": 1.4,
+                "ensemble_prediction": 12.7,
+                "confidence_tier": "safe",
+                "signal_tier": "A",
+                "edge": 28.0,
+                "min_agreeing_model_edge": 15.0,
+                "price_cents": 29.0,
+                "coverage_ok": True,
+                "coverage_score": 0.82,
+                "degraded_reason": None,
+                "executable_quality_score": 0.82,
+                "data_quality_score": 0.83,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "city_observation_only")
 
     def test_policy_requires_higher_confidence_for_today(self) -> None:
         opportunity = type(
@@ -301,13 +334,68 @@ class PolicyAndDatesTests(unittest.TestCase):
         )()
         with patch.dict(
             "os.environ",
-            {"WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_ENABLED": "0"},
+            {
+                "WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_ENABLED": "0",
+                "WEATHER_POLICY_TOMORROW_PRICE_OVERRIDE_ENABLED": "1",
+                "WEATHER_POLICY_TOMORROW_MAX_PRICE_CENTS": "60",
+            },
             clear=False,
         ):
             decision = apply_trade_policy(opportunity)
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.reason, "allowed")
         self.assertIn(decision.risk_label, {"Moderate", "Risky"})
+
+    def test_policy_allows_sea_tomorrow_no_override_with_price_up_to_61(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "SEA",
+                "day_label": "tomorrow",
+                "side": "NO",
+                "bucket": "52-53Â°F",
+                "consensus_score": 0.78,
+                "spread": 3.1,
+                "sigma": 3.9,
+                "ensemble_prediction": 50.8,
+                "confidence_tier": "safe",
+                "signal_tier": "B",
+                "edge": 30.2,
+                "model_prob": 91.7,
+                "min_agreeing_model_edge": 19.0,
+                "price_cents": 61.0,
+                "coverage_ok": True,
+                "coverage_score": 0.84,
+                "agreement_models": 10,
+                "total_models": 12,
+                "agreement_pct": 83.33,
+                "degraded_reason": None,
+                "executable_quality_score": 0.82,
+                "data_quality_score": 0.86,
+            },
+        )()
+        with patch.dict(
+            "os.environ",
+            {
+                "WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_ENABLED": "0",
+                "WEATHER_POLICY_TOMORROW_PRICE_OVERRIDE_ENABLED": "0",
+                "WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_ENABLED": "1",
+                "WEATHER_POLICY_SEA_TOMORROW_NO_MAX_PRICE_CENTS": "61",
+                "WEATHER_POLICY_MAX_SPREAD": "4",
+            },
+            clear=False,
+        ):
+            decision = apply_trade_policy(opportunity)
+            min_price, max_price = effective_price_bounds(
+                opportunity,
+                min_price_cents=10.0,
+                max_price_cents=55.0,
+            )
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
+        self.assertEqual(min_price, 10.0)
+        self.assertEqual(max_price, 61.0)
 
     def test_policy_does_not_apply_strong_city_override_to_non_whitelisted_city(self) -> None:
         opportunity = type(

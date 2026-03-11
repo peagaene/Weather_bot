@@ -33,6 +33,7 @@ VISUAL_CROSSING_API_KEY = os.getenv("VISUAL_CROSSING_API_KEY", "").strip()
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "").strip()
 WEATHER_ENABLE_MOS = os.getenv("WEATHER_ENABLE_MOS", "1").strip().lower() not in {"0", "false", "no"}
 WEATHER_ENABLE_HRRR = os.getenv("WEATHER_ENABLE_HRRR", "0").strip().lower() in {"1", "true", "yes"}
+WEATHER_ENABLE_METEOSTAT = os.getenv("WEATHER_ENABLE_METEOSTAT", "1").strip().lower() not in {"0", "false", "no"}
 WEATHER_CALIBRATION_PATH = os.getenv(
     "WEATHER_CALIBRATION_PATH",
     str(Path(__file__).resolve().parents[2] / "export" / "calibration" / "weather_model_calibration.json"),
@@ -73,6 +74,7 @@ PROVIDER_CACHE_POLICY: dict[str, dict[str, int]] = {
     "openweather": {"ttl": 1800, "max_stale": 7200},
     "mos": {"ttl": 10800, "max_stale": 21600},
     "hrrr": {"ttl": 3600, "max_stale": 7200},
+    "meteostat": {"ttl": 10800, "max_stale": 43200},
 }
 
 OPEN_METEO_MODELS: dict[str, str | None] = {
@@ -107,14 +109,6 @@ ENSEMBLE_MODELS: dict[str, str] = {
 }
 OPTIONAL_PROVIDER_NAMES = ("tomorrow", "weatherapi", "visualcrossing", "openweather", "hrrr")
 
-MOS_STATION_CODES: dict[str, str] = {
-    "NYC": "KLGA",
-    "CHI": "KORD",
-    "ATL": "KATL",
-    "SEA": "KSEA",
-    "MIA": "KMIA",
-    "DAL": "KDFW",
-}
 MOS_PRODUCT_SPECS: dict[str, dict[str, str]] = {
     "mav": {
         "provider": "mos",
@@ -991,7 +985,7 @@ def _combine_guidance_rows(guidance_rows: list[dict[str, tuple[float | None, flo
 
 
 def _mos_station_code(city: CityConfig) -> str | None:
-    return MOS_STATION_CODES.get(city.key)
+    return str(getattr(city, "official_station_code", "") or "").strip() or None
 
 
 def _fetch_mos_daily(city: CityConfig) -> list[ModelForecast]:
@@ -1502,11 +1496,65 @@ def _to_fahrenheit(value: float | int | None, unit: str | None) -> float | None:
 
 
 def _nws_station_id(city: CityConfig) -> str | None:
-    return MOS_STATION_CODES.get(city.key)
+    return str(getattr(city, "official_station_code", "") or "").strip() or None
 
 
 def nws_station_id(city: CityConfig) -> str | None:
     return _nws_station_id(city)
+
+
+def _meteostat_runtime() -> tuple[Any, Any] | None:
+    if not WEATHER_ENABLE_METEOSTAT:
+        return None
+    try:
+        stations_mod = importlib.import_module("meteostat")
+    except Exception:
+        return None
+    Daily = getattr(stations_mod, "Daily", None)
+    Stations = getattr(stations_mod, "Stations", None)
+    if Daily is None or Stations is None:
+        return None
+    return Daily, Stations
+
+
+def _fetch_meteostat_observed_daily_highs(city: CityConfig, *, lookback_days: int = 7) -> tuple[str | None, dict[str, float]]:
+    runtime = _meteostat_runtime()
+    if runtime is None:
+        return None, {}
+    Daily, Stations = runtime
+    end_date = datetime.now(ZoneInfo(city.timezone_name)).date()
+    start_date = end_date - timedelta(days=max(1, int(lookback_days)))
+    try:
+        station_frame = Stations().nearby(city.lat, city.lon).fetch(1)
+    except Exception:
+        return None, {}
+    if station_frame is None or len(station_frame.index) <= 0:
+        return None, {}
+    station_id = str(station_frame.index[0])
+    try:
+        daily_frame = Daily(station_id, start=start_date, end=end_date).fetch()
+    except Exception:
+        return station_id, {}
+    if daily_frame is None or getattr(daily_frame, "empty", True):
+        return station_id, {}
+    by_date: dict[str, float] = {}
+    try:
+        items = daily_frame.reset_index().to_dict(orient="records")
+    except Exception:
+        return station_id, {}
+    for item in items:
+        date_value = item.get("time")
+        tmax_c = item.get("tmax")
+        temp_f = _to_fahrenheit(tmax_c, "C")
+        if temp_f is None:
+            continue
+        local_date = str(getattr(date_value, "date", lambda: date_value)())
+        by_date[local_date] = round(float(temp_f), 2)
+    return station_id, by_date
+
+
+def fetch_meteostat_observed_daily_highs(city: CityConfig, *, lookback_days: int = 7) -> tuple[str | None, dict[str, float]]:
+    return _fetch_meteostat_observed_daily_highs(city, lookback_days=lookback_days)
 
 
 def _fetch_nws_observed_daily_highs(city: CityConfig, *, limit: int = 48) -> dict[str, float]:
@@ -1806,16 +1854,18 @@ def fetch_all_model_forecasts(city: CityConfig) -> ForecastFetchBundle:
     failure_details: dict[str, str] = {}
     fetchers: dict[str, Any] = {
         **{model_key: (lambda mk=model_key: _fetch_open_meteo_model(city, mk)) for model_key in OPEN_METEO_MODELS},
-        "nws": lambda: _fetch_nws_daily(city),
-        "mos": lambda: _fetch_mos_daily(city),
     }
+    if city.supports_nws:
+        fetchers["nws"] = lambda: _fetch_nws_daily(city)
+    if city.supports_mos:
+        fetchers["mos"] = lambda: _fetch_mos_daily(city)
     optional_fetchers = {
         "tomorrow": _fetch_tomorrow_daily,
         "weatherapi": _fetch_weatherapi_daily,
         "visualcrossing": _fetch_visualcrossing_daily,
         "openweather": _fetch_openweather_daily,
     }
-    if WEATHER_ENABLE_HRRR:
+    if WEATHER_ENABLE_HRRR and city.supports_hrrr:
         optional_fetchers["hrrr"] = _fetch_hrrr_daily
     disabled_optional: set[str] = {
         key for key in optional_fetchers if _provider_in_cooldown(key) and _provider_cooldown_until(key) - time.time() > 300

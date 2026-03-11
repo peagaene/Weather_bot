@@ -8,6 +8,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .degendoppler import CITY_CONFIG_BY_KEY, parse_bucket_bounds as parse_market_bucket_bounds
+
 
 @dataclass
 class PolicyDecision:
@@ -24,6 +26,10 @@ def effective_price_bounds(
     max_price_cents: float,
 ) -> tuple[float, float]:
     day_label = str(getattr(opportunity, "day_label", "") or "").strip().lower()
+    city_key = str(getattr(opportunity, "city_key", "") or "").strip().upper()
+    side = str(getattr(opportunity, "side", "") or "").strip().upper()
+    agreement_pct = float(getattr(opportunity, "agreement_pct", 0.0) or 0.0)
+    model_prob = float(getattr(opportunity, "model_prob", 0.0) or 0.0)
     confidence_tier = str(getattr(opportunity, "confidence_tier", "risky") or "risky").strip().lower()
     signal_tier = str(getattr(opportunity, "signal_tier", "C") or "C").strip().upper()
     tomorrow_price_override_enabled = str(
@@ -42,6 +48,12 @@ def effective_price_bounds(
     tomorrow_price_override_max = float(
         os.getenv("WEATHER_POLICY_TOMORROW_MAX_PRICE_CENTS", str(max_price_cents))
     )
+    sea_specific_override_enabled = str(
+        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_ENABLED", "1")
+    ).strip().lower() not in {"0", "false", "no"}
+    sea_specific_override_max = float(
+        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_MAX_PRICE_CENTS", str(tomorrow_price_override_max))
+    )
     effective_max_price = max_price_cents
     if (
         tomorrow_price_override_enabled
@@ -50,6 +62,20 @@ def effective_price_bounds(
         and signal_tier in tomorrow_price_override_signal_tiers
     ):
         effective_max_price = max(max_price_cents, tomorrow_price_override_max)
+    if (
+        sea_specific_override_enabled
+        and city_key == "SEA"
+        and day_label == "tomorrow"
+        and side == "NO"
+        and confidence_tier == "safe"
+        and signal_tier == "B"
+        and agreement_pct >= 80.0
+        and model_prob >= 88.0
+        and float(getattr(opportunity, "edge", 0.0) or 0.0) >= 20.0
+        and float(getattr(opportunity, "min_agreeing_model_edge", 0.0) or 0.0) >= 15.0
+        and float(getattr(opportunity, "consensus_score", 0.0) or 0.0) >= 0.75
+    ):
+        effective_max_price = max(effective_max_price, sea_specific_override_max)
     return min_price_cents, effective_max_price
 
 
@@ -113,7 +139,7 @@ def _canonical_bucket_key(label: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def parse_bucket_bounds(label: str) -> tuple[float | None, float | None]:
+def _legacy_parse_bucket_bounds(label: str) -> tuple[float | None, float | None]:
     text = (label or "").upper()
     replacements = [
         "ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°F",
@@ -143,6 +169,11 @@ def parse_bucket_bounds(label: str) -> tuple[float | None, float | None]:
         return float(above_match.group(1)), None
 
     return None, None
+
+
+def parse_bucket_bounds(label: str) -> tuple[float | None, float | None]:
+    low, high, _ = parse_market_bucket_bounds(label)
+    return low, high
 
 
 def compute_risk_label(opportunity: Any, range_info: dict | None = None) -> tuple[str, float]:
@@ -231,6 +262,7 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     executable_quality_score = float(getattr(opportunity, "executable_quality_score", 0.0) or 0.0)
     data_quality_score = float(getattr(opportunity, "data_quality_score", 0.0) or 0.0)
     coverage_issue_type = str(getattr(opportunity, "coverage_issue_type", "") or "").strip().lower()
+    side = str(getattr(opportunity, "side", "") or "").strip().upper()
     valid_model_count = int(getattr(opportunity, "valid_model_count", 0) or 0)
     required_model_count = int(getattr(opportunity, "required_model_count", 0) or 0)
     agreement_models = int(getattr(opportunity, "agreement_models", 0) or 0)
@@ -330,6 +362,24 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
     strong_city_risky_override_min_consensus = float(
         os.getenv("WEATHER_POLICY_STRONG_CITY_RISKY_OVERRIDE_MIN_CONSENSUS", "0.75")
     )
+    sea_tomorrow_no_override_enabled = str(
+        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_ENABLED", "1")
+    ).strip().lower() not in {"0", "false", "no"}
+    sea_tomorrow_no_override_min_agreement_pct = float(
+        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_AGREEMENT_PCT", "80")
+    )
+    sea_tomorrow_no_override_min_edge = float(
+        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_EDGE", "20")
+    )
+    sea_tomorrow_no_override_min_model_prob = float(
+        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_MODEL_PROB", "88")
+    )
+    sea_tomorrow_no_override_min_worst_case_edge = float(
+        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_WORST_CASE_EDGE", "15")
+    )
+    sea_tomorrow_no_override_min_consensus = float(
+        os.getenv("WEATHER_POLICY_SEA_TOMORROW_NO_OVERRIDE_MIN_CONSENSUS", "0.75")
+    )
     fallback_enabled = str(os.getenv("WEATHER_POLICY_ALLOW_FALLBACK_COVERAGE", "1")).strip().lower() not in {"0", "false", "no"}
     fallback_min_models = int(os.getenv("WEATHER_POLICY_FALLBACK_MIN_VALID_MODELS", "4") or 4)
     fallback_min_worst_case_edge = float(os.getenv("WEATHER_POLICY_FALLBACK_MIN_WORST_CASE_EDGE", "8") or 8)
@@ -380,8 +430,24 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
         and min_agreeing_model_edge >= strong_city_risky_override_min_worst_case_edge
         and consensus >= strong_city_risky_override_min_consensus
     )
+    sea_tomorrow_no_override = (
+        sea_tomorrow_no_override_enabled
+        and city_key == "SEA"
+        and day_label == "tomorrow"
+        and side == "NO"
+        and confidence_tier == "safe"
+        and signal_tier == "B"
+        and effective_agreement_pct >= sea_tomorrow_no_override_min_agreement_pct
+        and edge >= sea_tomorrow_no_override_min_edge
+        and float(getattr(opportunity, "model_prob", 0.0) or 0.0) >= sea_tomorrow_no_override_min_model_prob
+        and min_agreeing_model_edge >= sea_tomorrow_no_override_min_worst_case_edge
+        and consensus >= sea_tomorrow_no_override_min_consensus
+    )
     if not effective_coverage_ok:
         return PolicyDecision(False, "coverage_not_ok", risk_label, risk_score)
+    city_cfg = CITY_CONFIG_BY_KEY.get(city_key)
+    if city_cfg is not None and not bool(getattr(city_cfg, "live_enabled", True)):
+        return PolicyDecision(False, "city_observation_only", risk_label, risk_score)
     if city_key and city_key in blocked_city_keys:
         return PolicyDecision(False, "city_blocked_historical_underperformance", risk_label, risk_score)
     if degraded_reason and degraded_reason != "degraded_clob_price" and not fallback_coverage_ok:
@@ -393,7 +459,7 @@ def apply_trade_policy(opportunity: Any) -> PolicyDecision:
         return PolicyDecision(False, "signal_tier_not_actionable", risk_label, risk_score)
     if confidence_tier == "risky":
         return PolicyDecision(False, "confidence_risky", risk_label, risk_score)
-    if risk_label == "Risky" and not tomorrow_risky_override and not strong_city_risky_override:
+    if risk_label == "Risky" and not tomorrow_risky_override and not strong_city_risky_override and not sea_tomorrow_no_override:
         return PolicyDecision(False, "risk_label_risky", risk_label, risk_score)
     if risk_label == "Moderate" and effective_signal_tier not in {"A+", "A", "B"}:
         return PolicyDecision(False, "risk_label_not_safe", risk_label, risk_score)
