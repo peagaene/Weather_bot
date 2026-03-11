@@ -153,7 +153,8 @@ class PolicyAndDatesTests(unittest.TestCase):
                 "data_quality_score": 0.83,
             },
         )()
-        decision = apply_trade_policy(opportunity)
+        with patch.dict("os.environ", {"WEATHER_POLICY_ENFORCE_BLOCKED_CITY_KEYS": "1"}, clear=False):
+            decision = apply_trade_policy(opportunity)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "city_blocked_historical_underperformance")
 
@@ -181,7 +182,8 @@ class PolicyAndDatesTests(unittest.TestCase):
                 "data_quality_score": 0.83,
             },
         )()
-        decision = apply_trade_policy(opportunity)
+        with patch.dict("os.environ", {"WEATHER_POLICY_ENFORCE_LIVE_ENABLED": "1"}, clear=False):
+            decision = apply_trade_policy(opportunity)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "city_observation_only")
 
@@ -209,7 +211,8 @@ class PolicyAndDatesTests(unittest.TestCase):
                 "data_quality_score": 0.8,
             },
         )()
-        decision = apply_trade_policy(opportunity)
+        with patch.dict("os.environ", {"WEATHER_POLICY_TODAY_ALLOWED_CONFIDENCE": "safe,strong,lock"}, clear=False):
+            decision = apply_trade_policy(opportunity)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "today_requires_higher_confidence")
 
@@ -301,7 +304,8 @@ class PolicyAndDatesTests(unittest.TestCase):
                 "data_quality_score": 0.86,
             },
         )()
-        decision = apply_trade_policy(opportunity)
+        with patch.dict("os.environ", {"WEATHER_POLICY_ALLOWED_SIGNAL_TIERS": "A+,A,B"}, clear=False):
+            decision = apply_trade_policy(opportunity)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "signal_tier_not_actionable")
 
@@ -426,7 +430,10 @@ class PolicyAndDatesTests(unittest.TestCase):
         )()
         with patch.dict(
             "os.environ",
-            {"WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_ENABLED": "0"},
+            {
+                "WEATHER_POLICY_TOMORROW_RISKY_OVERRIDE_ENABLED": "0",
+                "WEATHER_POLICY_GENERAL_RISKY_OVERRIDE_ENABLED": "0",
+            },
             clear=False,
         ):
             decision = apply_trade_policy(opportunity)
@@ -451,6 +458,95 @@ class PolicyAndDatesTests(unittest.TestCase):
             )
         self.assertEqual(min_price, 10.0)
         self.assertEqual(max_price, 60.0)
+
+    def test_policy_allows_observation_only_city_by_default_when_other_filters_pass(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "PAR",
+                "day_label": "tomorrow",
+                "bucket": "12-13Â°C",
+                "consensus_score": 0.82,
+                "spread": 1.0,
+                "sigma": 1.4,
+                "ensemble_prediction": 12.7,
+                "confidence_tier": "safe",
+                "signal_tier": "A",
+                "edge": 28.0,
+                "min_agreeing_model_edge": 15.0,
+                "price_cents": 29.0,
+                "coverage_ok": True,
+                "coverage_score": 0.82,
+                "degraded_reason": None,
+                "executable_quality_score": 0.82,
+                "data_quality_score": 0.83,
+            },
+        )()
+        with patch.dict("os.environ", {"WEATHER_POLICY_ENFORCE_LIVE_ENABLED": "0"}, clear=False):
+            decision = apply_trade_policy(opportunity)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
+
+    def test_policy_allows_historically_bad_city_by_default_when_other_filters_pass(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "MIA",
+                "day_label": "tomorrow",
+                "bucket": "72-73Ã‚Â°F",
+                "consensus_score": 0.82,
+                "spread": 1.0,
+                "sigma": 1.4,
+                "ensemble_prediction": 72.4,
+                "confidence_tier": "safe",
+                "signal_tier": "A",
+                "edge": 28.0,
+                "min_agreeing_model_edge": 15.0,
+                "price_cents": 29.0,
+                "coverage_ok": True,
+                "coverage_score": 0.82,
+                "degraded_reason": None,
+                "executable_quality_score": 0.82,
+                "data_quality_score": 0.83,
+            },
+        )()
+        with patch.dict("os.environ", {"WEATHER_POLICY_ENFORCE_BLOCKED_CITY_KEYS": "0"}, clear=False):
+            decision = apply_trade_policy(opportunity)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
+
+    def test_policy_allows_strong_c_tier_risky_case_with_exceptional_agreement(self) -> None:
+        opportunity = type(
+            "Opportunity",
+            (),
+            {
+                "city_key": "ATL",
+                "day_label": "today",
+                "bucket": "82-83Â°F",
+                "consensus_score": 0.62,
+                "spread": 1.1,
+                "sigma": 3.2,
+                "ensemble_prediction": 81.9,
+                "confidence_tier": "strong",
+                "signal_tier": "C",
+                "edge": 24.0,
+                "min_agreeing_model_edge": 16.0,
+                "price_cents": 40.0,
+                "coverage_ok": True,
+                "coverage_score": 0.82,
+                "agreement_models": 11,
+                "total_models": 12,
+                "agreement_pct": 91.67,
+                "degraded_reason": None,
+                "executable_quality_score": 0.82,
+                "data_quality_score": 0.83,
+            },
+        )()
+        decision = apply_trade_policy(opportunity)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason, "allowed")
 
     def test_policy_uses_generated_profile_json(self) -> None:
         opportunity = type(
@@ -481,7 +577,14 @@ class PolicyAndDatesTests(unittest.TestCase):
             profile_path.write_text('{"blocked_city_keys":["CHI"]}', encoding="utf-8")
             _load_policy_profile.cache_clear()
             try:
-                with patch.dict("os.environ", {"WEATHER_POLICY_PROFILE_PATH": str(profile_path)}, clear=False):
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "WEATHER_POLICY_PROFILE_PATH": str(profile_path),
+                        "WEATHER_POLICY_ENFORCE_BLOCKED_CITY_KEYS": "1",
+                    },
+                    clear=False,
+                ):
                     decision = apply_trade_policy(opportunity)
             finally:
                 _load_policy_profile.cache_clear()
