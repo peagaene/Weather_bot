@@ -182,9 +182,9 @@ def _preflight_or_raise(*, live: bool, execute_top: int) -> None:
         raise RuntimeError("PAPERBOT_MIN_STAKE_USD must be > 0")
     if max_stake <= 0:
         raise RuntimeError("PAPERBOT_MAX_STAKE_USD must be > 0 for safe auto-trade")
-    if max_stake > 2:
-        raise RuntimeError("safe auto-trade blocks PAPERBOT_MAX_STAKE_USD > 2")
     if live:
+        if max_stake > 2:
+            raise RuntimeError("safe auto-trade blocks PAPERBOT_MAX_STAKE_USD > 2")
         if daily_limit <= 0:
             raise RuntimeError("WEATHER_DAILY_LIVE_LIMIT must be > 0")
         if bucket_live_limit <= 0:

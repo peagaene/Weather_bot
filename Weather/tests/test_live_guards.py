@@ -143,6 +143,19 @@ class LiveGuardsTests(unittest.TestCase):
 
             run_auto_trade._preflight_or_raise(live=True, execute_top=1)
 
+    def test_auto_trade_dry_run_allows_max_stake_above_live_cap(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "PAPERBOT_BANKROLL_USD": "18",
+                "PAPERBOT_MIN_STAKE_USD": "1",
+                "PAPERBOT_MAX_STAKE_USD": "5",
+                "WEATHER_MAX_ORDERS_PER_EVENT": "1",
+            },
+            clear=False,
+        ):
+            run_auto_trade._preflight_or_raise(live=False, execute_top=0)
+
     def test_auto_trade_detects_rate_limited_snapshot(self) -> None:
         payload = {
             "blocked_opportunities": [
